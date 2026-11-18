@@ -53,29 +53,36 @@ enum ArchiveFolders {
         return dir.hasPrefix(base) ? String(dir.dropFirst(base.count)) : dir
     }
 
-    /// Folders that hold invoices plus folders that exist on disk (two levels deep), with invoice counts.
-    /// The unpaid folder comes first, then newest archive folders first.
-    @MainActor static func list(_ library: Library) -> [(path: String, count: Int)] {
+    /// Direct subfolders of a folder (relative to the main folder; "" is the main folder itself), from disk and
+    /// from filed invoices, with the number of invoices inside each, subfolders included.
+    /// The unpaid folder comes first, then newest folders first.
+    @MainActor static func children(of folder: String, _ library: Library) -> [(path: String, count: Int)] {
         let root = library.settings.rootFolder
         guard !root.isEmpty else { return [] }
+        let prefix = folder.isEmpty ? "" : folder + "/"
         var counts: [String: Int] = [:]
-        for r in library.records { counts[relative(r.filePath, root: root), default: 0] += 1 }
-        let fm = FileManager.default
-        let rootURL = URL(fileURLWithPath: root)
-        for level1 in (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? [] {
-            guard (try? level1.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
-            counts[level1.lastPathComponent, default: 0] += 0
-            for level2 in (try? fm.contentsOfDirectory(at: level1, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
-            where (try? level2.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                counts[level1.lastPathComponent + "/" + level2.lastPathComponent, default: 0] += 0
-            }
+        for r in library.records {
+            let f = relative(r.filePath, root: root)
+            guard !f.hasPrefix("/"), f.hasPrefix(prefix), f.count > prefix.count,
+                  let name = f.dropFirst(prefix.count).split(separator: "/").first else { continue }
+            counts[prefix + name, default: 0] += 1
         }
-        counts[""] = nil
+        let dir = URL(fileURLWithPath: root).appendingPathComponent(folder)
+        for u in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
+        where (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            counts[prefix + u.lastPathComponent, default: 0] += 0
+        }
         let unpaid = library.settings.unpaidFolder
         return counts.map { (path: $0.key, count: $0.value) }.sorted { a, b in
             if (a.path == unpaid) != (b.path == unpaid) { return a.path == unpaid }
             return a.path.localizedStandardCompare(b.path) == .orderedDescending
         }
+    }
+
+    /// The main folder's own name, such as "Rechnungen".
+    @MainActor static func rootName(_ library: Library) -> String {
+        let name = (library.settings.rootFolder as NSString).lastPathComponent
+        return name.isEmpty ? "Hauptordner" : name
     }
 }
 
@@ -88,6 +95,8 @@ struct ArchiveView: View {
     var open: (InvoiceRecord.ID) -> Void
     /// Shows a saved view in the archive.
     var showView: (SavedView.ID) -> Void
+    /// Shows a folder (relative to the main folder) in the archive.
+    var openFolder: (String) -> Void
 
     /// The filters in use. Starts from the saved view or the sidebar folder, and is saved as a view on request.
     @State private var filter: SavedView
@@ -98,10 +107,11 @@ struct ArchiveView: View {
     @State private var newName = ""
 
     init(start: SavedView, viewID: SavedView.ID?, open: @escaping (InvoiceRecord.ID) -> Void,
-         showView: @escaping (SavedView.ID) -> Void) {
+         showView: @escaping (SavedView.ID) -> Void, openFolder: @escaping (String) -> Void) {
         self.viewID = viewID
         self.open = open
         self.showView = showView
+        self.openFolder = openFolder
         _filter = State(initialValue: start)
     }
 
@@ -111,7 +121,7 @@ struct ArchiveView: View {
 
     private var title: String {
         if let savedView { return savedView.name }
-        return filter.folder.map { $0.isEmpty ? "Hauptordner" : $0 } ?? "Alle Dateien"
+        return filter.folder.map { $0.isEmpty ? ArchiveFolders.rootName(model.library) : ($0 as NSString).lastPathComponent } ?? "Alle Dateien"
     }
 
     /// Column IDs and titles, for the Columns menu.
@@ -126,6 +136,7 @@ struct ArchiveView: View {
     var body: some View {
         let rows = filteredRows
         VStack(spacing: 0) {
+            folderStrip
             filterBar
             Table(rows, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columns) {
                 mainColumns
@@ -155,18 +166,21 @@ struct ArchiveView: View {
         .navigationTitle(title)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                if let folder = filter.folder, !folder.isEmpty, viewID == nil || savedView?.isFolder == true {
+                    let starred = folderView(folder) != nil
+                    Button { toggleFolderStar(folder) } label: {
+                        Label(starred ? "Stern entfernen" : "Ordner mit Stern versehen", systemImage: starred ? "star.fill" : "star")
+                    }
+                    .help(starred ? "Ordner aus der Seitenleiste entfernen" : "Ordner in der Seitenleiste unter „Archiv“ zeigen")
+                }
                 viewsMenu
                 columnsMenu
             }
         }
-        .alert("Ansicht speichern", isPresented: $naming) {
-            TextField("Name", text: $newName)
-            Button("Speichern") { saveNewView() }
-                .keyboardShortcut(.defaultAction)
-                .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
-            Button("Abbrechen", role: .cancel) {}
-        } message: {
-            Text("Speichert den aktuellen Ordner und die Filter. Die Ansicht bekommt einen Stern und erscheint in der Seitenleiste unter „Ansichten“.")
+        .sheet(isPresented: $naming) {
+            ViewEditor(title: "Ansicht speichern",
+                       note: "Speichert den aktuellen Ordner und die Filter. Die Ansicht bekommt einen Stern und erscheint in der Seitenleiste unter „Ansichten“.",
+                       name: newName, icon: "star.fill") { name, icon in saveNewView(name, icon) }
         }
         .onChange(of: columns) { saveColumns() }
     }
@@ -241,7 +255,7 @@ struct ArchiveView: View {
     private var filteredRows: [ArchiveRow] {
         let root = model.library.settings.rootFolder
         var rows = model.library.records.map { ArchiveRow($0, folder: ArchiveFolders.relative($0.filePath, root: root)) }
-        if let folder = filter.folder { rows = rows.filter { $0.folder == folder || $0.folder.hasPrefix(folder + "/") } }
+        if let folder = filter.folder, !folder.isEmpty { rows = rows.filter { $0.folder == folder || $0.folder.hasPrefix(folder + "/") } }
         switch filter.status {
         case .all: break
         case .unpaid: rows = rows.filter { $0.record.status == .unpaid }
@@ -320,9 +334,9 @@ struct ArchiveView: View {
             if !model.library.views.isEmpty {
                 Divider()
                 Section("Gespeicherte Ansichten") {
-                    ForEach(model.library.views) { v in
+                    ForEach(model.library.views.filter { $0.isFolder != true }) { v in
                         Button { showView(v.id) } label: {
-                            Label(v.name, systemImage: v.starred ? "star.fill" : "line.3.horizontal.decrease.circle")
+                            Label(v.name, systemImage: v.symbol)
                         }
                     }
                 }
@@ -338,10 +352,12 @@ struct ArchiveView: View {
         naming = true
     }
 
-    private func saveNewView() {
+    private func saveNewView(_ name: String, _ icon: String) {
         var v = filter
         v.id = UUID()
-        v.name = newName.trimmingCharacters(in: .whitespaces)
+        v.name = name
+        v.icon = icon
+        v.isFolder = nil
         v.starred = true
         model.library.views.append(v)
         showView(v.id)
@@ -354,7 +370,108 @@ struct ArchiveView: View {
         v.id = old.id
         v.name = old.name
         v.starred = old.starred
+        v.icon = old.icon
+        v.isFolder = old.isFolder
         model.library.views[i] = v
+    }
+
+    /// The starred-folder entry for a folder, if it has one.
+    private func folderView(_ path: String) -> SavedView? {
+        model.library.views.first { $0.isFolder == true && $0.folder == path }
+    }
+
+    /// Stars a folder (it shows up in the sidebar with a folder icon and its name) or removes the star.
+    private func toggleFolderStar(_ path: String) {
+        if let v = folderView(path) {
+            model.library.views.removeAll { $0.id == v.id }
+            if viewID == v.id { openFolder(path) }
+        } else {
+            model.library.views.append(SavedView(name: (path as NSString).lastPathComponent, folder: path, icon: "folder", isFolder: true))
+        }
+    }
+
+    // MARK: - Folder browser
+
+    /// Path bar and the folder's subfolders as Finder-like tiles, shown when a folder is open.
+    @ViewBuilder private var folderStrip: some View {
+        if let folder = filter.folder {
+            let subs = ArchiveFolders.children(of: folder, model.library)
+            VStack(alignment: .leading, spacing: 10) {
+                pathBar(folder)
+                if !subs.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 10) {
+                            ForEach(subs, id: \.path) { s in folderTile(s.path, s.count) }
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 4)
+                    }
+                    .scrollIndicators(.hidden)
+                }
+            }
+            .padding(.top, 10)
+        }
+    }
+
+    private func pathBar(_ folder: String) -> some View {
+        let parts = folder.split(separator: "/").map(String.init)
+        return HStack(spacing: 4) {
+            crumb(ArchiveFolders.rootName(model.library), "", current: parts.isEmpty)
+            ForEach(parts.indices, id: \.self) { i in
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                crumb(parts[i], parts[...i].joined(separator: "/"), current: i == parts.count - 1)
+            }
+            Spacer()
+            Button("Im Finder öffnen", systemImage: "folder") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: model.library.settings.rootFolder).appendingPathComponent(folder))
+            }
+            .buttonStyle(.borderless)
+            .font(.callout)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func crumb(_ title: String, _ path: String, current: Bool) -> some View {
+        Button { openFolder(path) } label: {
+            Label(title, systemImage: path.isEmpty ? "folder.fill" : "folder")
+                .font(.callout.weight(current ? .semibold : .regular))
+                .foregroundStyle(current ? .primary : .secondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(current)
+    }
+
+    private func folderTile(_ path: String, _ count: Int) -> some View {
+        let starred = folderView(path) != nil
+        let url = URL(fileURLWithPath: model.library.settings.rootFolder).appendingPathComponent(path)
+        return Button { openFolder(path) } label: {
+            VStack(spacing: 4) {
+                Image(systemName: path == model.library.settings.unpaidFolder ? "folder.fill.badge.questionmark" : "folder.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.tint)
+                    .frame(height: 38)
+                Text((path as NSString).lastPathComponent).font(.callout).lineLimit(1)
+                Text(count == 1 ? "1 Datei" : "\(count) Dateien").font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(width: 108, height: 96)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
+        .overlay(alignment: .topTrailing) {
+            Button { toggleFolderStar(path) } label: {
+                Image(systemName: starred ? "star.fill" : "star").foregroundStyle(starred ? AnyShapeStyle(.yellow) : AnyShapeStyle(.tertiary))
+            }
+            .buttonStyle(.plain)
+            .padding(7)
+            .help(starred ? "Stern entfernen" : "Mit Stern in die Seitenleiste")
+        }
+        .contextMenu {
+            Button("Öffnen") { openFolder(path) }
+            Button(starred ? "Stern entfernen" : "Mit Stern in die Seitenleiste") { toggleFolderStar(path) }
+            Divider()
+            Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+        .help(path)
     }
 
     private func toggleStar(_ id: SavedView.ID) {
@@ -434,5 +551,57 @@ struct ArchiveView: View {
 
     private func saveColumns() {
         if let data = try? JSONEncoder().encode(columns) { UserDefaults.standard.set(data, forKey: Self.columnsKey) }
+    }
+}
+
+/// Name and sidebar icon of a saved view, for saving a new one or editing it.
+struct ViewEditor: View {
+    let title: String
+    var note: String? = nil
+    @State var name: String
+    @State var icon: String
+    var save: (String, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    static let icons = [
+        "star.fill", "bookmark.fill", "flag.fill", "heart.fill", "tag.fill", "pin.fill",
+        "folder", "archivebox", "tray.full", "doc.text", "checkmark.circle", "exclamationmark.triangle",
+        "eurosign.circle", "creditcard", "cart", "calendar", "clock", "building.2",
+        "phone", "wifi", "bolt", "car", "shippingbox", "fork.knife",
+    ]
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title).font(.headline)
+            if let note { Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            TextField("Name", text: $name).textFieldStyle(.roundedBorder)
+            Text("Symbol").font(.subheadline).foregroundStyle(.secondary)
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 6), count: 8), spacing: 6) {
+                ForEach(Self.icons, id: \.self) { s in
+                    Button { icon = s } label: {
+                        Image(systemName: s)
+                            .font(.system(size: 15))
+                            .frame(width: 34, height: 30)
+                            .background(icon == s ? Color.accentColor.opacity(0.25) : .clear, in: .rect(cornerRadius: 7))
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .help(s)
+                }
+            }
+            HStack {
+                Label(trimmed.isEmpty ? "Vorschau" : trimmed, systemImage: icon)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Abbrechen", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Speichern") { save(trimmed, icon); dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmed.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
     }
 }

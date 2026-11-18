@@ -145,18 +145,27 @@ public struct SavedView: Codable, Identifiable, Equatable, Sendable {
     public var year: Int
     public var onlyNeedsCheck: Bool
     public var search: String
+    /// SF Symbol shown in the sidebar; nil for views saved before icons existed.
+    public var icon: String?
+    /// A starred folder from the folder browser rather than a named filter; listed under "Archiv".
+    public var isFolder: Bool?
 
     public init(id: UUID = UUID(), name: String = "", starred: Bool = true, folder: String? = nil, status: Status = .all,
-                year: Int = 0, onlyNeedsCheck: Bool = false, search: String = "") {
+                year: Int = 0, onlyNeedsCheck: Bool = false, search: String = "", icon: String? = nil, isFolder: Bool? = nil) {
         self.id = id
         self.name = name
         self.starred = starred
+        self.icon = icon
+        self.isFolder = isFolder
         self.folder = folder
         self.status = status
         self.year = year
         self.onlyNeedsCheck = onlyNeedsCheck
         self.search = search
     }
+
+    /// The sidebar icon.
+    public var symbol: String { icon ?? (isFolder == true ? "folder" : "star.fill") }
 
     /// True when both views filter the same way, whatever their name or star.
     public func sameFilters(as other: SavedView) -> Bool {

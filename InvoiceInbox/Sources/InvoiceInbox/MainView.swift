@@ -22,7 +22,6 @@ struct MainView: View {
     @State private var pendingOpen: InvoiceRecord.ID?
     /// The saved view being renamed from the sidebar.
     @State private var renaming: SavedView?
-    @State private var newViewName = ""
 
     var body: some View {
         Group {
@@ -38,7 +37,8 @@ struct MainView: View {
                 NavigationSplitView {
                     sidebarList
                 } detail: {
-                    ArchiveView(start: start, viewID: viewID, open: openInvoice) { sidebar = .view($0) }
+                    ArchiveView(start: start, viewID: viewID, open: openInvoice, showView: { sidebar = .view($0) },
+                                openFolder: { sidebar = .archive($0) })
                         .id(sidebar)
                 }
             } else {
@@ -81,17 +81,12 @@ struct MainView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 20))
             }
         }
-        .alert("Ansicht umbenennen", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField("Name", text: $newViewName)
-            Button("Umbenennen") {
-                if let id = renaming?.id, let i = model.library.views.firstIndex(where: { $0.id == id }),
-                   !newViewName.trimmingCharacters(in: .whitespaces).isEmpty {
-                    model.library.views[i].name = newViewName.trimmingCharacters(in: .whitespaces)
-                }
-                renaming = nil
+        .sheet(item: $renaming) { v in
+            ViewEditor(title: v.isFolder == true ? "Ordner bearbeiten" : "Ansicht bearbeiten", name: v.name, icon: v.symbol) { name, icon in
+                guard let i = model.library.views.firstIndex(where: { $0.id == v.id }) else { return }
+                model.library.views[i].name = name
+                model.library.views[i].icon = icon
             }
-            .keyboardShortcut(.defaultAction)
-            Button("Abbrechen", role: .cancel) { renaming = nil }
         }
         .onChange(of: sidebar) {
             selection = pendingOpen
@@ -112,18 +107,34 @@ struct MainView: View {
             }
             Section("Archiv") {
                 row(.archive(nil), "Alle Dateien", "tablecells", model.library.records.count)
-                ForEach(ArchiveFolders.list(model.library), id: \.path) { f in
-                    row(.archive(f.path), f.path, f.path == model.library.settings.unpaidFolder ? "folder.badge.questionmark" : "folder", f.count)
+                if !model.library.settings.rootFolder.isEmpty {
+                    Label(ArchiveFolders.rootName(model.library), systemImage: "folder.fill")
+                        .tag(SidebarItem.archive(""))
+                        .help("Hauptordner mit allen Unterordnern")
+                }
+                // Starred folders, with the name and icon they were given.
+                ForEach(model.library.views.filter { $0.isFolder == true && $0.starred }) { v in
+                    Label(v.name, systemImage: v.symbol)
+                        .tag(SidebarItem.view(v.id))
+                        .help(v.folder ?? "")
+                        .contextMenu {
+                            Button("Bearbeiten …") { renaming = v }
+                            Button("Im Finder zeigen") {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.library.settings.rootFolder).appendingPathComponent(v.folder ?? "")])
+                            }
+                            Divider()
+                            Button("Stern entfernen") { deleteView(v.id) }
+                        }
                 }
             }
-            let starred = model.library.views.filter(\.starred)
+            let starred = model.library.views.filter { $0.starred && $0.isFolder != true }
             if !starred.isEmpty {
                 Section("Ansichten") {
                     ForEach(starred) { v in
-                        Label(v.name, systemImage: "star.fill")
+                        Label(v.name, systemImage: v.symbol)
                             .tag(SidebarItem.view(v.id))
                             .contextMenu {
-                                Button("Umbenennen …") { renaming = v; newViewName = v.name }
+                                Button("Bearbeiten …") { renaming = v }
                                 Button("Stern entfernen") { setStar(v.id, false) }
                                 Divider()
                                 Button("Ansicht löschen", role: .destructive) { deleteView(v.id) }

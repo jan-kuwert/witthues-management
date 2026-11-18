@@ -142,7 +142,8 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(!FileManager.default.fileExists(atPath: r.filePath))
 
         // Records and saved views survive a restart.
-        lib.views = [SavedView(name: "Paid 2026", folder: "Archiv", status: .paid, year: 2026)]
+        lib.views = [SavedView(name: "Paid 2026", folder: "Archiv", status: .paid, year: 2026, icon: "eurosign.circle"),
+                     SavedView(name: "2026-05", folder: "Archiv/2026-05", icon: "folder", isFolder: true)]
         let reopened = Library(directory: tmp.appendingPathComponent("data"))
         #expect(reopened.views == lib.views)
         #expect(reopened.settings.paidFolder == "Archiv/{paid_yyyy}-{paid_mm}")
