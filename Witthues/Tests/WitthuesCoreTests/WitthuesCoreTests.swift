@@ -271,3 +271,35 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(MailOrigin().mailURL == nil)
     }
 }
+
+@Suite struct RenameTests {
+    @MainActor @Test func customName() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
+        let outcome = try await lib.ingest(data: try fixture("zugferd.pdf"), fileName: "x.pdf", origin: MailOrigin(),
+                                           extractor: Extractor(useAppleIntelligence: false))
+        guard case .filed(let r) = outcome else { Issue.record("not filed"); return }
+
+        // A typed name is used in the template folder; "/" can't end up in a file name.
+        try lib.update(r.id, fields: r.fields, status: .unpaid, paidDate: nil, name: "Strom März/April")
+        var now = try #require(lib.records.first)
+        #expect(now.filePath.hasSuffix("Rechnungen/00 Offen/Strom März-April.pdf"))
+        #expect(!FileManager.default.fileExists(atPath: r.filePath))
+
+        // Editing a field keeps the name; paying keeps it too and moves the file to the archive folder.
+        var f = now.fields; f.buyer = "Witthüs"
+        try lib.update(r.id, fields: f, status: .unpaid, paidDate: nil)
+        #expect(try #require(lib.records.first).filePath == now.filePath)
+        try lib.setPaid(r.id, true, on: day(2026, 5, 2))
+        now = try #require(lib.records.first)
+        #expect(now.filePath.hasSuffix("Rechnungen/2026-03/Strom März-April.pdf"))
+
+        // Typing exactly the template's name follows the template again, so a corrected date renames the file.
+        try lib.update(r.id, fields: now.fields, status: .paid, paidDate: now.paidDate, name: "26-03-05 Musterlieferant ZF-2026-4711")
+        #expect(try #require(lib.records.first).customName == nil)
+        f = now.fields; f.invoiceDate = day(2026, 4, 1)
+        try lib.update(r.id, fields: f, status: .paid, paidDate: now.paidDate)
+        #expect(try #require(lib.records.first).filePath.hasSuffix("Rechnungen/2026-04/26-04-01 Musterlieferant ZF-2026-4711.pdf"))
+    }
+}

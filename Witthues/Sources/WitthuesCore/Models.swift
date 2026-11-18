@@ -82,6 +82,8 @@ public struct InvoiceRecord: Codable, Identifiable, Equatable, Sendable {
     public var sha256: String
     public var importedAt: Date
     public var fileMissing: Bool = false
+    /// A file name the user typed instead of the settings' template (without extension); nil follows the template.
+    public var customName: String?
 
     public var needsReview: Bool { !reviewReasons.isEmpty }
     public var fileURL: URL { URL(fileURLWithPath: filePath) }

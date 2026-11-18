@@ -18,6 +18,12 @@ public struct FileOrganizer: Sendable {
             .reduce(rootURL) { $0.appendingPathComponent($1, isDirectory: true) }
     }
 
+    /// A name typed by the user, made safe for a file name.
+    public static func cleanName(_ name: String) -> String {
+        String(name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespaces).prefix(180))
+    }
+
     public func baseName(for fields: InvoiceFields, paidDate: Date?) -> String {
         let name = PathTemplate.render(settings.fileName, fields: fields, paidDate: paidDate)
             .replacingOccurrences(of: "/", with: "-")
@@ -40,10 +46,12 @@ public struct FileOrganizer: Sendable {
         return target
     }
 
-    /// Moves an existing file to where its fields and status say it belongs. Returns the new location.
-    public func place(_ current: URL, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?) throws -> URL {
+    /// Moves an existing file to where its fields and status say it belongs, under the given name when set.
+    /// Returns the new location.
+    public func place(_ current: URL, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, name: String? = nil) throws -> URL {
         let ext = current.pathExtension.isEmpty ? "pdf" : current.pathExtension
-        let target = try uniqueURL(fields: fields, status: status, paidDate: paidDate, ext: ext, current: current)
+        let target = try uniqueURL(fields: fields, status: status, paidDate: paidDate, ext: ext, current: current,
+                                   name: name)
         guard target.standardizedFileURL != current.standardizedFileURL else { return current }
         try FileManager.default.moveItem(at: current, to: target)
         // A matching e-invoice XML filed next to the PDF moves with it.
@@ -54,10 +62,12 @@ public struct FileOrganizer: Sendable {
         return target
     }
 
-    private func uniqueURL(fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, ext: String, current: URL?) throws -> URL {
+    private func uniqueURL(fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, ext: String, current: URL?,
+                           name: String? = nil) throws -> URL {
         let dir = folder(for: fields, status: status, paidDate: paidDate)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let base = baseName(for: fields, paidDate: paidDate)
+        let custom = name.map(Self.cleanName) ?? ""
+        let base = custom.isEmpty ? baseName(for: fields, paidDate: paidDate) : custom
         for n in 1...999 {
             let name = n == 1 ? base : "\(base) (\(n))"
             let url = dir.appendingPathComponent(name).appendingPathExtension(ext)

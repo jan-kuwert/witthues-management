@@ -399,6 +399,8 @@ struct InvoiceDetail: View {
     @State private var totalText = ""
     @State private var hasDate = true
     @State private var paidDate = Date()
+    /// The file name without extension, as shown in the field.
+    @State private var fileName = ""
 
     private var record: InvoiceRecord? { model.library.records.first { $0.id == id } }
 
@@ -478,17 +480,25 @@ struct InvoiceDetail: View {
 
     private func filing(_ r: InvoiceRecord) -> some View {
         let edited = editedFields
-        let newPath = model.library.organizer.relativePath(for: edited, status: r.status, paidDate: r.paidDate,
-                                                           ext: r.fileURL.pathExtension.isEmpty ? "pdf" : r.fileURL.pathExtension)
+        let o = model.library.organizer
+        let ext = r.fileURL.pathExtension.isEmpty ? "pdf" : r.fileURL.pathExtension
+        let templateName = o.baseName(for: edited, paidDate: r.paidDate)
+        let changed = edited != r.fields || fileName != currentName(r)
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Datei").font(.caption).foregroundStyle(.secondary)
-            Text(newPath).font(.callout.monospaced()).textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Dateiname").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    TextField("Dateiname", text: $fileName).textFieldStyle(.roundedBorder)
+                    Text(".\(ext)").foregroundStyle(.secondary)
+                }
+                templateHint(templateName, matches: fileName == templateName) { fileName = templateName }
+            }
             GlassEffectContainer {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Button("Speichern & umbenennen") { apply(status: r.status, paidDate: r.paidDate) }
+                        Button("Speichern & umbenennen") { save(r) }
                             .buttonStyle(.glass)
-                            .disabled(edited == r.fields)
+                            .disabled(!changed || fileName.trimmingCharacters(in: .whitespaces).isEmpty)
                         Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                             .buttonStyle(.glass)
                     }
@@ -515,6 +525,34 @@ struct InvoiceDetail: View {
         }
         .padding(12)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
+    }
+
+    /// The name or folder the settings' template gives, with a button that puts it into the field.
+    private func templateHint(_ value: String, matches: Bool, use: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wand.and.stars").foregroundStyle(.secondary)
+            Text("Vorlage: \(value)").foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                .help("Aus dem Namensformat in den Einstellungen")
+            Spacer(minLength: 4)
+            if matches {
+                Image(systemName: "checkmark").foregroundStyle(.green).help("Entspricht der Vorlage")
+            } else {
+                Button("Übernehmen", action: use).buttonStyle(.link)
+            }
+        }
+        .font(.caption)
+    }
+
+    private func currentName(_ r: InvoiceRecord) -> String { r.fileURL.deletingPathExtension().lastPathComponent }
+    /// Saves fields and the file name. A name left as it was keeps following the template when the record did.
+    private func save(_ r: InvoiceRecord) {
+        do {
+            try model.library.update(id, fields: editedFields, status: r.status, paidDate: r.paidDate,
+                                     name: fileName == currentName(r) ? r.customName : fileName)
+            if let r = record { load(r) }
+        } catch {
+            model.lastError = error.localizedDescription
+        }
     }
 
     private func origin(_ r: InvoiceRecord) -> some View {
@@ -548,6 +586,7 @@ struct InvoiceDetail: View {
         totalText = r.fields.total.map { NSDecimalNumber(decimal: $0).stringValue } ?? ""
         hasDate = r.fields.invoiceDate != nil
         paidDate = Date()
+        fileName = currentName(r)
     }
 
     private func apply(status: InvoiceStatus, paidDate: Date?) {

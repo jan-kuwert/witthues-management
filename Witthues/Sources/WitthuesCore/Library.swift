@@ -182,12 +182,21 @@ public final class Library {
 
     // MARK: - Changing invoices
 
-    /// Saves edited fields and paid status, renaming and moving the file to match.
+    /// Saves edited fields and paid status, renaming and moving the file to match. A name the user typed is kept.
     public func update(_ id: InvoiceRecord.ID, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?) throws {
+        guard let r = records.first(where: { $0.id == id }) else { return }
+        try update(id, fields: fields, status: status, paidDate: paidDate, name: r.customName)
+    }
+
+    /// Saves fields and status with the file name (without extension) the user typed. nil, or the name the
+    /// template would give, follows the template. The folder always comes from the folder templates.
+    public func update(_ id: InvoiceRecord.ID, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, name: String?) throws {
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         var r = records[i]
         let newPaid = status == .paid ? (paidDate ?? Date()) : nil
-        let url = try organizer.place(r.fileURL, fields: fields, status: status, paidDate: newPaid)
+        let o = organizer
+        let cleanName = name.map(FileOrganizer.cleanName).flatMap { $0.isEmpty || $0 == o.baseName(for: fields, paidDate: newPaid) ? nil : $0 }
+        let url = try o.place(r.fileURL, fields: fields, status: status, paidDate: newPaid, name: cleanName)
         if r.fields != fields {
             r.source = .manual
             r.reviewReasons = Extractor.check(fields)
@@ -197,6 +206,7 @@ public final class Library {
         r.paidDate = newPaid
         r.filePath = url.path
         r.fileMissing = false
+        r.customName = cleanName
         records[i] = r
         save()
     }
