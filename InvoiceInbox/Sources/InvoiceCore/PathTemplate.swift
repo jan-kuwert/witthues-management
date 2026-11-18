@@ -7,19 +7,19 @@ import Foundation
 /// {invoice} (invoice number), {total}, {currency}.
 public enum PathTemplate {
     public static let variables: [(name: String, help: String)] = [
-        ("{yyyy}", "Invoice year, 2026"),
-        ("{yy}", "Invoice year, 26"),
-        ("{mm}", "Invoice month, 03"),
-        ("{dd}", "Invoice day, 07"),
-        ("{paid_yyyy}", "Year it was marked paid"),
-        ("{paid_mm}", "Month it was marked paid"),
-        ("{paid_dd}", "Day it was marked paid"),
-        ("{customer}", "Company that sent the invoice (same as {seller})"),
-        ("{seller}", "Company that sent the invoice"),
-        ("{buyer}", "Company the invoice is addressed to"),
-        ("{invoice}", "Invoice number"),
-        ("{total}", "Gross amount, 119.00"),
-        ("{currency}", "Currency, EUR"),
+        ("{yyyy}", "Rechnungsjahr, 2026"),
+        ("{yy}", "Rechnungsjahr, 26"),
+        ("{mm}", "Rechnungsmonat, 03"),
+        ("{dd}", "Rechnungstag, 07"),
+        ("{paid_yyyy}", "Jahr, in dem bezahlt wurde"),
+        ("{paid_mm}", "Monat, in dem bezahlt wurde"),
+        ("{paid_dd}", "Tag, an dem bezahlt wurde"),
+        ("{customer}", "Firma, die die Rechnung geschickt hat (wie {seller})"),
+        ("{seller}", "Firma, die die Rechnung geschickt hat"),
+        ("{buyer}", "Empfänger der Rechnung"),
+        ("{invoice}", "Rechnungsnummer"),
+        ("{total}", "Bruttobetrag, 119.00"),
+        ("{currency}", "Währung, EUR"),
     ]
 
     public static func render(_ template: String, fields: InvoiceFields, paidDate: Date? = nil,
@@ -39,10 +39,10 @@ public enum PathTemplate {
         addDate(fields.invoiceDate, prefix: "")
         addDate(paidDate, prefix: "paid_")
         let seller = cleanName(fields.seller)
-        values["seller"] = seller.isEmpty ? "Unknown" : seller
+        values["seller"] = seller.isEmpty ? "Unbekannt" : seller
         values["customer"] = values["seller"]
         values["buyer"] = cleanName(fields.buyer)
-        values["invoice"] = fields.invoiceNumber.isEmpty ? "no-number" : fields.invoiceNumber
+        values["invoice"] = fields.invoiceNumber.isEmpty ? "ohne-Nummer" : fields.invoiceNumber
         values["total"] = fields.total.map { String(format: "%.2f", NSDecimalNumber(decimal: $0).doubleValue) } ?? ""
         values["currency"] = fields.currency
 

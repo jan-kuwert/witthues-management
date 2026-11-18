@@ -23,7 +23,7 @@ public struct FileOrganizer: Sendable {
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: "  ", with: " ")
             .trimmingCharacters(in: .whitespaces)
-        return String((name.isEmpty ? "Invoice" : name).prefix(180))
+        return String((name.isEmpty ? "Rechnung" : name).prefix(180))
     }
 
     /// Where a file with these fields belongs, relative to the main folder, for previews.

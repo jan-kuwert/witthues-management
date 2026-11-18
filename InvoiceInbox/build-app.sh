@@ -1,12 +1,13 @@
 #!/bin/zsh
-# Builds "Invoice Inbox.app" into ./dist. Run on a Mac with Xcode 26 or newer.
+# Builds "Witthüs.app" and "Witthüs.dmg" into ./dist. Run on an Apple Silicon Mac with Xcode 26 or newer.
+# The .dmg is the file to AirDrop or copy to another Mac; see README.md, "Installing on another Mac".
 set -euo pipefail
 cd "$(dirname "$0")"
 
 swift build -c release --product InvoiceInbox
 BIN="$(swift build -c release --show-bin-path)/InvoiceInbox"
 
-APP="dist/Invoice Inbox.app"
+APP="dist/Witthüs.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/InvoiceInbox"
@@ -40,3 +41,11 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 # Ad-hoc signature so macOS runs it locally; use a Developer ID to give it to others without warnings.
 codesign --force --deep --sign - "$APP"
 echo "Built $APP"
+
+# Disk image with the app and a link to /Applications, so installing is one drag.
+STAGE="$(mktemp -d)"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -quiet -volname "Witthüs" -srcfolder "$STAGE" -ov -format UDZO "dist/Witthüs.dmg"
+rm -rf "$STAGE"
+echo "Built dist/Witthüs.dmg"

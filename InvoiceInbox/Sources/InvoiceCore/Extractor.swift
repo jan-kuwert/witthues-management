@@ -28,14 +28,14 @@ public struct Extractor: Sendable {
     public static var appleIntelligenceStatus: String {
         #if canImport(FoundationModels)
         switch SystemLanguageModel.default.availability {
-        case .available: return "Available"
-        case .unavailable(.appleIntelligenceNotEnabled): return "Turn on Apple Intelligence in System Settings"
-        case .unavailable(.modelNotReady): return "Model is still downloading"
-        case .unavailable(.deviceNotEligible): return "This Mac can't run Apple Intelligence"
-        case .unavailable(let other): return "Unavailable (\(other))"
+        case .available: return "Verfügbar"
+        case .unavailable(.appleIntelligenceNotEnabled): return "Apple Intelligence in den Systemeinstellungen einschalten"
+        case .unavailable(.modelNotReady): return "Modell wird noch geladen"
+        case .unavailable(.deviceNotEligible): return "Dieser Mac unterstützt Apple Intelligence nicht"
+        case .unavailable(let other): return "Nicht verfügbar (\(other))"
         }
         #else
-        return "Not supported by this macOS"
+        return "Von diesem macOS nicht unterstützt"
         #endif
     }
 
@@ -46,10 +46,10 @@ public struct Extractor: Sendable {
                 return Extraction(isInvoice: true, notInvoiceReason: "", fields: f, source: .eInvoiceXML,
                                   reviewReasons: Self.check(f), xmlOnly: true)
             }
-            return notInvoice("XML file is not an e-invoice")
+            return notInvoice("XML-Datei ist keine E-Rechnung")
         }
         guard lower.hasSuffix(".pdf") || data.starts(with: Array("%PDF".utf8)) else {
-            return notInvoice("Not a PDF")
+            return notInvoice("Kein PDF")
         }
         if let xml = EInvoice.xml(inPDF: data), let f = EInvoice.parse(xml: xml) {
             return Extraction(isInvoice: true, notInvoiceReason: "", fields: f, source: .eInvoiceXML,
@@ -60,7 +60,7 @@ public struct Extractor: Sendable {
         var reasons: [String] = []
         if text.trimmingCharacters(in: .whitespacesAndNewlines).count < 40 {
             text = await Self.ocr(data)
-            reasons.append("Scanned PDF, read with OCR")
+            reasons.append("Gescanntes PDF, per Texterkennung gelesen")
         }
         var (looksLike, why) = TextRules.looksLikeInvoice(text: text, fileName: fileName, subject: subject)
         // Phone photos of receipts often carry a poor text layer from the scanning app; Apple's OCR reads them better.
@@ -70,7 +70,7 @@ public struct Extractor: Sendable {
             if retry.0 {
                 text = ocrText
                 (looksLike, why) = retry
-                reasons.append("Text layer unreadable, read with OCR")
+                reasons.append("Textebene unlesbar, per Texterkennung gelesen")
             }
         }
         let rules = TextRules.extract(text: text)
@@ -86,19 +86,19 @@ public struct Extractor: Sendable {
                 fields = Self.merge(model: m, rules: rules, text: text, reasons: &reasons)
                 source = .appleIntelligence
             } catch {
-                reasons.append("Apple Intelligence failed: \(error.localizedDescription)")
+                reasons.append("Apple Intelligence fehlgeschlagen: \(error.localizedDescription)")
             }
         }
         #endif
         // The model decides only when both agree it's unclear; keyword rules catch the model's misses.
         let isInvoice = looksLike || modelSaysInvoice == true
-        if !isInvoice { return notInvoice(modelSaysInvoice == false ? "Apple Intelligence: not an invoice. \(why)" : why) }
+        if !isInvoice { return notInvoice(modelSaysInvoice == false ? "Apple Intelligence: keine Rechnung. \(why)" : why) }
 
         if fields.seller.isEmpty, !Self.senderName(sender).isEmpty {
             fields.seller = Self.senderName(sender)
-            reasons.append("Company name taken from the mail sender")
+            reasons.append("Firmenname aus dem Absender der Mail übernommen")
         } else if source == .textRules, !fields.seller.isEmpty {
-            reasons.append("Company name guessed from the letterhead")
+            reasons.append("Firmenname aus dem Briefkopf geraten")
         }
         reasons += Self.check(fields)
         return Extraction(isInvoice: true, notInvoiceReason: "", fields: fields, source: source,
@@ -112,11 +112,11 @@ public struct Extractor: Sendable {
     /// Reasons a person should look at the fields.
     static func check(_ f: InvoiceFields) -> [String] {
         var r: [String] = []
-        if f.invoiceNumber.isEmpty { r.append("No invoice number found") }
-        if f.invoiceDate == nil { r.append("No invoice date found") }
-        if f.seller.isEmpty { r.append("No company name found") }
-        if let d = f.invoiceDate, d > Date().addingTimeInterval(86400 * 2) { r.append("Invoice date is in the future") }
-        if let d = f.invoiceDate, d < Date().addingTimeInterval(-86400 * 365 * 3) { r.append("Invoice date is more than 3 years ago") }
+        if f.invoiceNumber.isEmpty { r.append("Keine Rechnungsnummer gefunden") }
+        if f.invoiceDate == nil { r.append("Kein Rechnungsdatum gefunden") }
+        if f.seller.isEmpty { r.append("Kein Firmenname gefunden") }
+        if let d = f.invoiceDate, d > Date().addingTimeInterval(86400 * 2) { r.append("Rechnungsdatum liegt in der Zukunft") }
+        if let d = f.invoiceDate, d < Date().addingTimeInterval(-86400 * 365 * 3) { r.append("Rechnungsdatum ist älter als 3 Jahre") }
         return r
     }
 
@@ -205,17 +205,17 @@ public struct Extractor: Sendable {
             f.invoiceNumber = number
         } else {
             f.invoiceNumber = rules.invoiceNumber
-            if !number.isEmpty { reasons.append("Invoice number “\(number)” from Apple Intelligence is not in the document") }
+            if !number.isEmpty { reasons.append("Rechnungsnummer „\(number)“ von Apple Intelligence steht nicht im Dokument") }
         }
         if !rules.invoiceNumber.isEmpty, f.invoiceNumber != rules.invoiceNumber {
-            reasons.append("Invoice number unclear: “\(f.invoiceNumber)” or “\(rules.invoiceNumber)”")
+            reasons.append("Rechnungsnummer unklar: „\(f.invoiceNumber)“ oder „\(rules.invoiceNumber)“")
         }
         f.invoiceDate = EInvoice.parseDate(m.invoiceDate) ?? rules.invoiceDate
         if let a = f.invoiceDate, let b = rules.invoiceDate, !Calendar.current.isDate(a, inSameDayAs: b) {
-            reasons.append("Invoice date unclear")
+            reasons.append("Rechnungsdatum unklar")
         }
         f.total = TextRules.parseAmount(m.total) ?? rules.total
-        if let a = f.total, let b = rules.total, a != b { reasons.append("Total unclear") }
+        if let a = f.total, let b = rules.total, a != b { reasons.append("Betrag unklar") }
         f.currency = m.currency.count == 3 ? m.currency.uppercased() : rules.currency
         return f
     }

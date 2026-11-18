@@ -1,0 +1,175 @@
+# Witthüs
+
+Eine Mac-App, die Rechnungen aus dem Postfach holt, umbenennt und in einen Ordner ablegt, zum Beispiel einen Ordner, der mit OneDrive synchronisiert wird. Unbezahlte Rechnungen liegen in `00 Offen`. Bezahlte kommen in einen Monatsordner wie `2026-03`.
+
+Sie ist für ein MacBook Air M1 mit 8 GB gebaut und läuft komplett auf dem Mac: ohne Cloud-Dienst, Docker oder lokales Sprachmodell zum Selbstinstallieren.
+
+- [Was die App macht](#was-die-app-macht)
+- [Installieren auf einem anderen Mac (AirDrop)](#installieren-auf-einem-anderen-mac-airdrop)
+- [Einrichten](#einrichten)
+- [Automatisch oder per Knopf abrufen?](#automatisch-oder-per-knopf-abrufen)
+- [Wie Rechnungen gelesen werden](#wie-rechnungen-gelesen-werden)
+- [Entwickeln](#entwickeln)
+- [Offene Fragen und Ideen](#offene-fragen-und-ideen)
+
+## Was die App macht
+
+1. **Mail abrufen:** Sie liest per IMAP das Postfach, standardmäßig Telekom (`secureimap.t-online.de:993`) mit der vollen Adresse und dem Homepage-Center-Passwort. Das Passwort liegt im macOS-Schlüsselbund. Mails werden nur gelesen: nie verschoben, gelöscht oder als gelesen markiert. Apple Mail kann also weiterlaufen wie bisher.
+2. **Nur Rechnungen:** Sie nimmt nur PDF- und XML-Anhänge und ignoriert alle anderen Dateien. AGB, Angebote, Lieferscheine, Auftragsbestätigungen und Newsletter landen unter „Keine Rechnungen“ und können dort von Hand abgelegt werden.
+3. **Umbenennen und ablegen:** `yy-mm-dd Firma Rechnungsnummer.pdf`, zum Beispiel `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf`, im Ordner `00 Offen`. Vorhandene Ordner werden wiederverwendet, fehlende angelegt. Nichts wird überschrieben: Gibt es den Namen schon, hängt die App „ (2)“ an. Doppelte Rechnungen erkennt sie am Dateiinhalt.
+4. **Bezahlt:** „Als bezahlt markieren“ mit Zahlungsdatum verschiebt die Datei (und eine XML daneben) in den Archivordner, standardmäßig `{yyyy}-{mm}`.
+
+### Oberfläche
+
+- **Übersicht (Dashboard):** Zeitraum „Dieser Monat“, „Dieses Jahr“ oder „Gesamt“. Karten für offene, bezahlte und gesamte Beträge und für Rechnungen, die geprüft werden müssen. Diagramme für bezahlt/offen, die Firmen mit den höchsten Beträgen und wie die Rechnungen gelesen wurden. Darunter die ältesten offenen Rechnungen.
+- **Rechnungen:** Offen, Bezahlt, Zu prüfen, Alle. Links das PDF, rechts die Felder zum Korrigieren, darunter „Speichern & umbenennen“ und „Als bezahlt markieren“.
+- **Archiv:** „Alle Dateien“ und die echten Ordner auf der Festplatte (zwei Ebenen tief, mit Anzahl). Eine Tabelle wie im Finder oder in Excel: Spalten ein- und ausblenden (Dateiname, Ordner, Rechnungsdatum, Status, Bezahlt am, Rechnungsnummer, Firma, Empfänger, Betrag, Währung, Gelesen aus, Prüfung, Mail-Betreff, Importiert), sortieren, filtern nach Text, Status, Jahr und „Zu prüfen“. Unten stehen Anzahl und Summe. Rechtsklick öffnet die Datei, zeigt sie im Finder oder markiert sie als bezahlt oder offen.
+- **Ansichten:** Ein Filter lässt sich unter einem Namen speichern (Lesezeichen-Menü in der Symbolleiste). Mit Stern erscheint die Ansicht in der Seitenleiste unter „Ansichten“. Rechtsklick dort zum Umbenennen, Stern entfernen oder Löschen.
+- **Menüleiste:** Status, „Jetzt abrufen“, die fünf neuesten Rechnungen, Einstellungen, Beenden. Neue Rechnungen melden sich mit einer Mitteilung.
+- **Ziehen und Ablegen:** PDFs oder XML-Rechnungen aus dem Finder ins Fenster ziehen.
+- Glas-Look (Liquid Glass von macOS 26), Symbol aus dem „W“ des Witthüs-Logos, alles auf Deutsch.
+
+## Installieren auf einem anderen Mac (AirDrop)
+
+Die installierbare Datei ist **`Witthüs.dmg`**. Der Ziel-Mac braucht **macOS 26 oder neuer** und einen **Apple-Chip** (M1 oder neuer).
+
+### 1. Die Datei bauen (auf einem Mac mit Xcode)
+
+Einmalig Xcode 26 oder neuer aus dem App Store installieren und einmal öffnen, damit es die Lizenz bestätigt. Dann im Terminal:
+
+```sh
+git clone https://github.com/jan-kuwert/witthues-management.git
+cd witthues-management/InvoiceInbox
+./build-app.sh
+```
+
+Danach liegen in `InvoiceInbox/dist/`:
+
+- `Witthüs.app`: die App selbst
+- `Witthüs.dmg`: die App plus eine Verknüpfung zu „Programme“. Diese Datei verschickt man.
+
+### 2. Übertragen
+
+`Witthüs.dmg` im Finder rechts anklicken → **Teilen → AirDrop** → den anderen Mac wählen. Ein USB-Stick, OneDrive oder eine Mail gehen genauso.
+
+### 3. Auf dem anderen Mac installieren
+
+1. `Witthüs.dmg` aus „Downloads“ doppelklicken.
+2. Im Fenster **Witthüs** auf den Ordner **Programme** ziehen. Dann das Fenster schließen und die DMG im Finder auswerfen.
+3. **Erster Start:** Die App ist nicht mit einem bezahlten Apple-Entwicklerkonto signiert. macOS meldet deshalb beim ersten Öffnen, dass die App nicht geprüft werden kann.
+   - Auf **Fertig** klicken (nicht „In den Papierkorb legen“).
+   - **Systemeinstellungen → Datenschutz & Sicherheit** öffnen, ganz nach unten scrollen, bei „Witthüs wurde blockiert“ auf **Dennoch öffnen** klicken und mit dem Mac-Passwort bestätigen.
+   - Das ist nur einmal nötig. Danach startet die App normal.
+
+   Alternative im Terminal: `xattr -dr com.apple.quarantine /Applications/Witthüs.app`
+4. Mitteilungen erlauben, wenn macOS fragt. In den Einstellungen der App unter „Abruf“ „Witthüs beim Anmelden starten“ einschalten, damit sie nach jedem Neustart läuft.
+
+**Updates:** Neue `Witthüs.dmg` bauen und die App in „Programme“ ersetzen. Einstellungen, Passwort, Ansichten und die Liste der Rechnungen bleiben erhalten. Sie liegen in `~/Library/Application Support/` und im Schlüsselbund, nicht in der App.
+
+**Ohne Warnung beim ersten Start** geht es nur mit einem Apple-Developer-Konto (99 €/Jahr): dann mit einer „Developer ID“ signieren und von Apple notarisieren lassen. Für einen Mac im Büro lohnt sich das nicht.
+
+## Einrichten
+
+Einstellungen öffnen (⌘,).
+
+**Ordner**
+
+- **Hauptordner** wählen, zum Beispiel den Rechnungsordner in OneDrive. Alle anderen Ordner liegen darunter.
+- Ordner und Dateiname sind Vorlagen mit Variablen. „Ordner wählen …“ kann auch neue Ordner anlegen. Eine Vorschau zeigt, wo eine neue Rechnung landet und wohin sie nach dem Bezahlen wandert.
+- `/` in einer Vorlage erzeugt Unterordner, zum Beispiel `Archiv/{paid_yyyy}-{paid_mm}`.
+
+| Einstellung | Standard | Beispiel |
+|---|---|---|
+| Ordner für offene Rechnungen | `00 Offen` | `00 Offen/` |
+| Ordner für bezahlte Rechnungen | `{yyyy}-{mm}` | `2026-03/` |
+| Dateiname | `{yy}-{mm}-{dd} {customer} {invoice}` | `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf` |
+
+| Variable | Bedeutung |
+|---|---|
+| `{yyyy}` `{yy}` `{mm}` `{dd}` | Rechnungsdatum (2026, 26, 03, 07) |
+| `{paid_yyyy}` `{paid_mm}` `{paid_dd}` | Zahlungsdatum |
+| `{customer}` / `{seller}` | Firma, die die Rechnung geschickt hat, ohne „GmbH“ usw. |
+| `{buyer}` | Empfänger der Rechnung |
+| `{invoice}` | Rechnungsnummer |
+| `{total}` `{currency}` | Bruttobetrag, Währung |
+
+Zeichen, die macOS oder OneDrive nicht erlauben, werden ersetzt. Unbekannte Variablen werden in den Einstellungen markiert.
+
+**Mail:** E-Mail-Adresse, Passwort, Server, Port und TLS. Dazu der Ordner, der gelesen wird (Standard INBOX), und ab welchem Datum beim ersten Abruf gelesen wird (Standard: die letzten 30 Tage). „Speichern & Verbindung testen“ meldet sich an und listet die Ordner auf. Mit „Ordner ab diesem Datum neu lesen“ lässt sich später nachholen. Bereits abgelegte Rechnungen werden dabei erkannt und nicht doppelt abgelegt.
+
+**Abruf:** Beim Start abrufen, Intervall (2, 5, 15, 30, 60 Minuten oder „Nie (nur „Jetzt abrufen“)“), Beim Anmelden starten, Apple Intelligence an oder aus.
+
+## Automatisch oder per Knopf abrufen?
+
+Empfehlung: **automatisch**, und zwar so, wie es eingebaut ist:
+
+- Beim Start ruft die App neue Mails ab, danach alle 5 Minuten, solange sie läuft. „Jetzt abrufen“ (⌘R) geht jederzeit.
+- Das Fenster darf geschlossen werden: Die App bleibt in der Menüleiste und prüft weiter. Erst „Beenden“ stoppt sie.
+- Mit „Witthüs beim Anmelden starten“ läuft sie nach jedem Neustart von selbst.
+
+Das kostet fast nichts, auch auf 8 GB. Bei jedem Abruf fragt die App den Server nur nach Mails, die neuer sind als die zuletzt gesehene. Meist ist das eine kurze Anfrage ohne Ergebnis. Das Sprachmodell läuft nur, wenn wirklich eine neue Rechnung ohne eingebettete XML da ist.
+
+Bewusst nicht gebaut:
+
+- **Ein unsichtbarer Hintergrunddienst ohne App:** Er wäre schwerer zu verstehen und zu reparieren und brächte hier nichts. Die Menüleisten-App ist genauso „im Hintergrund“.
+- **Push vom Server (IMAP IDLE):** Rechnungen kämen damit sekundenschnell. Telekom trennt solche Dauerverbindungen aber gern. Alle 5 Minuten reicht für Rechnungen.
+
+## Wie Rechnungen gelesen werden
+
+Der Reihe nach, das Erste, was klappt, gewinnt:
+
+1. **E-Rechnung (exakt, ohne KI):** In PDFs eingebettetes ZUGFeRD/Factur-X und XRechnung/Peppol als XML (CII oder UBL). Kommt eine XRechnung neben einem PDF, wird die XML gelesen und neben dem PDF abgelegt.
+2. **Text aus dem PDF:** Bei Scans mit kaum Text, oder wenn der eingebettete Text unlesbar ist, liest Apples Texterkennung (Vision OCR) die Seite.
+3. **Apples Sprachmodell auf dem Mac** (Foundation Models, typisierte `@Generable`-Ausgabe) holt Firma, Rechnungsnummer, Datum, Betrag und Währung aus dem Text. Dafür muss Apple Intelligence eingeschaltet sein.
+4. **Textregeln** in Deutsch, Englisch, Französisch, Spanisch, Italienisch und Niederländisch prüfen das Ergebnis. Eine Rechnungsnummer, die so nicht im Text steht, gilt als erfunden, und die Regel gewinnt. Ohne Apple Intelligence arbeiten die Regeln allein.
+5. **Firma:** aus dem Briefkopf (eine Zeile mit GmbH, AG, SARL, Ltd …), sonst aus dem Absender der Mail. Beides wird zur Prüfung markiert.
+
+Alles, was unsicher ist, landet unter **„Zu prüfen“**. Dort die Felder korrigieren und „Speichern & umbenennen“.
+
+Es kommen Rechnungen aus Deutschland und aus dem Ausland, viele ohne eingebettete XML. Deshalb ist Schritt 3 der Normalfall und Schritt 1 der Glücksfall.
+
+**Stand mit den fünf Beispielrechnungen** (getestet ohne KI und ohne Texterkennung, weil der Cloud-Mac beides nicht kann):
+
+- Telekom: alle Felder richtig.
+- Herder: Firma, Datum und Betrag richtig. Rechnungsnummer fehlt → „Zu prüfen“.
+- Hassler: Datum und Betrag richtig. Firma fehlt → „Zu prüfen“.
+- Villringer, Maison & Objet (Fotos von Belegen): unter „Keine Rechnungen“. Für Fotos wurde absichtlich nichts Eigenes gebaut. Die allgemeine Texterkennung sollte sie auf dem echten Mac lesen, das ist noch ungetestet.
+
+## Entwickeln
+
+Swift-Paket in `InvoiceInbox/`:
+
+| Ziel | Inhalt |
+|---|---|
+| `InvoiceCore` | IMAP-Client, MIME, E-Rechnung (CII/UBL), Textregeln, Extraktion (Vision + Foundation Models), Vorlagen, Ablage, Bibliothek, Einstellungen/Schlüsselbund |
+| `InvoiceInbox` | Die SwiftUI-App (Übersicht, Rechnungen, Archiv, Ansichten, Einstellungen, Menüleiste) |
+| `invoice-cli` | Kommandozeile zum Testen der Extraktion |
+| `InvoiceCoreTests` | Tests |
+
+```sh
+cd InvoiceInbox
+swift test                                      # Tests
+swift run invoice-cli extract rechnung.pdf      # zeigt, was gelesen wird und den Dateinamen
+./build-app.sh                                  # dist/Witthüs.app und dist/Witthüs.dmg
+```
+
+- Daten (Rechnungsliste, Ansichten, Abrufstand) liegen als JSON in `~/Library/Application Support/`. Mit `INVOICE_INBOX_HOME=/pfad` lässt sich ein anderer Ordner nutzen, etwa für Demodaten: `open --env INVOICE_INBOX_HOME=$HOME/InvoiceInboxDemo dist/Witthüs.app`.
+- Das App-Symbol wird mit `Resources/make_icon.py` aus dem Logo erzeugt.
+- Echte Rechnungen nie ins Repository legen.
+
+## Offene Fragen und Ideen
+
+Offene Fragen:
+
+- **Archivmonat:** Kommt eine bezahlte Rechnung in den Monat der Rechnung (Standard: `{yyyy}-{mm}`) oder in den Monat der Zahlung (`{paid_yyyy}-{paid_mm}`)? Das lässt sich in den Einstellungen ändern.
+- **`{customer}`:** Ist das die Firma, die die Rechnung schickt? So ist es eingebaut.
+- **Datum im Dateinamen:** Es wird das Rechnungsdatum verwendet. Einige der Beispieldateien waren anders benannt.
+
+Noch auf dem echten M1 zu testen: Telekom-Anmeldung, Apple Intelligence, Texterkennung bei Scans und Fotos.
+
+Ideen für später:
+
+- Push vom Mailserver (IMAP IDLE) statt Abruf alle paar Minuten
+- Mit Developer ID signieren und notarisieren (keine Warnung beim ersten Start)
+- Export nach Excel/CSV (vorerst nicht nötig)
+- Eigene Behandlung für Fotos von Belegen (vorerst zu speziell)

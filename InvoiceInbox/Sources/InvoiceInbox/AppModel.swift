@@ -44,7 +44,7 @@ final class AppModel {
         library.refreshFiles()
         guard !isChecking, library.settings.isMailConfigured, library.settings.isFolderConfigured else {
             if !library.settings.isMailConfigured || !library.settings.isFolderConfigured {
-                lastError = "Open Settings to choose the main folder and enter the mail account."
+                lastError = "Bitte in den Einstellungen den Hauptordner wählen und das Mailkonto eintragen."
             }
             return
         }
@@ -55,7 +55,7 @@ final class AppModel {
             let summary = try await MailChecker.check(library: library, password: password) { [weak self] in self?.progress = $0 }
             lastResult = summary.text
             lastError = nil
-            if summary.filed > 0 { notify("\(summary.filed) new invoice\(summary.filed == 1 ? "" : "s") filed") }
+            if summary.filed > 0 { notify(summary.filed == 1 ? "1 neue Rechnung abgelegt" : "\(summary.filed) neue Rechnungen abgelegt") }
         } catch {
             lastError = error.localizedDescription
         }
@@ -67,7 +67,7 @@ final class AppModel {
             do {
                 let data = try Data(contentsOf: url)
                 _ = try await library.ingest(data: data, fileName: url.lastPathComponent,
-                                             origin: MailOrigin(subject: "Added by hand", attachmentName: url.lastPathComponent),
+                                             origin: MailOrigin(subject: "Von Hand hinzugefügt", attachmentName: url.lastPathComponent),
                                              extractor: extractor)
             } catch {
                 lastError = "\(url.lastPathComponent): \(error.localizedDescription)"
@@ -85,7 +85,7 @@ final class AppModel {
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
-                lastError = "Start at login: \(error.localizedDescription)"
+                lastError = "Beim Anmelden starten: \(error.localizedDescription)"
             }
         }
     }
@@ -96,7 +96,7 @@ final class AppModel {
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             let content = UNMutableNotificationContent()
-            content.title = "Invoice Inbox"
+            content.title = "Witthüs"
             content.body = text
             center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
         }

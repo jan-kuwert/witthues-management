@@ -28,12 +28,12 @@ public actor IMAPClient {
     public func connect(username: String, password: String) async throws {
         let greeting = try await readLogicalLine()
         guard greeting.text.hasPrefix("* OK") || greeting.text.hasPrefix("* PREAUTH") else {
-            throw IMAPError(message: "Mail server said: \(greeting.text)")
+            throw IMAPError(message: "Antwort des Mailservers: \(greeting.text)")
         }
         do {
             _ = try await command("LOGIN \(quote(username)) \(quote(password))")
         } catch let e as IMAPError {
-            throw IMAPError(message: "Login failed. Check the email address and mailbox password. (\(e.message))")
+            throw IMAPError(message: "Anmeldung fehlgeschlagen. Bitte E-Mail-Adresse und Postfach-Passwort prüfen. (\(e.message))")
         }
     }
 
@@ -146,7 +146,7 @@ public actor IMAPClient {
     private func fill() async throws {
         let (data, eof) = try await task.readData(ofMinLength: 1, maxLength: 1 << 20, timeout: timeout)
         if let data, !data.isEmpty { buffer.append(data); return }
-        if eof { throw IMAPError(message: "The mail server closed the connection") }
+        if eof { throw IMAPError(message: "Der Mailserver hat die Verbindung getrennt") }
     }
 
     private func quote(_ s: String) -> String {

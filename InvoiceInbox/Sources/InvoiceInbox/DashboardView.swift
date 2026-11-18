@@ -10,7 +10,7 @@ struct DashboardView: View {
     @State private var period: Period = .thisMonth
 
     enum Period: String, CaseIterable, Identifiable {
-        case thisMonth = "This month", thisYear = "This year", all = "All time"
+        case thisMonth = "Dieser Monat", thisYear = "Dieses Jahr", all = "Gesamt"
         var id: Self { self }
     }
 
@@ -32,9 +32,9 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Text("Dashboard").font(.largeTitle.weight(.semibold))
+                    Text("Übersicht").font(.largeTitle.weight(.semibold))
                     Spacer()
-                    Picker("Period", selection: $period) {
+                    Picker("Zeitraum", selection: $period) {
                         ForEach(Period.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
@@ -42,20 +42,20 @@ struct DashboardView: View {
                     .frame(width: 340)
                 }
                 if all.isEmpty {
-                    ContentUnavailableView("No invoices yet", systemImage: "chart.bar",
-                                           description: Text("Charts appear once invoices are filed."))
+                    ContentUnavailableView("Noch keine Rechnungen", systemImage: "chart.bar",
+                                           description: Text("Diagramme erscheinen, sobald Rechnungen abgelegt sind."))
                         .frame(maxWidth: .infinity, minHeight: 400)
                 } else {
                     kpis
-                    card(period == .thisMonth ? "Amount per day" : "Amount per month", subtitle: "By invoice date, \(currency)") { monthlyChart }
+                    card(period == .thisMonth ? "Betrag pro Tag" : "Betrag pro Monat", subtitle: "Nach Rechnungsdatum, \(currency)") { monthlyChart }
                     HStack(alignment: .top, spacing: 16) {
-                        card("Top companies", subtitle: "Total \(currency) in this period") { companiesChart }
-                        card("How invoices were read", subtitle: "All invoices in this period") { sourcesChart }
+                        card("Größte Lieferanten", subtitle: "Summe \(currency) im Zeitraum") { companiesChart }
+                        card("Wie Rechnungen gelesen wurden", subtitle: "Alle Rechnungen im Zeitraum") { sourcesChart }
                             .frame(width: 300)
                     }
-                    card("Waiting for payment", subtitle: "Oldest unpaid invoices first") { unpaidList }
+                    card("Warten auf Zahlung", subtitle: "Älteste offene Rechnungen zuerst") { unpaidList }
                     if otherCurrencyCount > 0 {
-                        Text("\(plural(otherCurrencyCount, "invoice")) in another currency \(otherCurrencyCount == 1 ? "is" : "are") counted but not included in the amounts.")
+                        Text("\(plural(otherCurrencyCount)) in anderer Währung \(otherCurrencyCount == 1 ? "wird" : "werden") gezählt, aber nicht in die Beträge eingerechnet.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -110,21 +110,21 @@ struct DashboardView: View {
         var sums: [String: MonthAmount] = [:]
         for r in countable {
             let month = cal.dateInterval(of: bucket, for: date(r))!.start
-            let status = r.status == .paid ? "Paid" : "Unpaid"
+            let status = r.status == .paid ? "Bezahlt" : "Offen"
             sums["\(month.timeIntervalSince1970)-\(status)", default: MonthAmount(month: month, status: status, amount: 0)].amount += amount(r)
         }
         return sums.values.sorted { $0.month < $1.month }
     }
 
     private var topCompanies: [NamedValue] {
-        Dictionary(grouping: countable) { $0.fields.seller.isEmpty ? "Unknown" : $0.fields.seller }
+        Dictionary(grouping: countable) { $0.fields.seller.isEmpty ? "Unbekannt" : $0.fields.seller }
             .map { NamedValue(name: $0.key, value: sum($0.value)) }
             .sorted { $0.value > $1.value }
             .prefix(8).map { $0 }
     }
 
     private var sources: [NamedValue] {
-        Dictionary(grouping: inPeriod, by: \.source.rawValue)
+        Dictionary(grouping: inPeriod, by: \.source.label)
             .map { NamedValue(name: $0.key, value: Double($0.value.count)) }
             .sorted { $0.value > $1.value }
     }
@@ -135,17 +135,17 @@ struct DashboardView: View {
         let unpaid = model.library.records.filter { $0.status == .unpaid }
         let unpaidCountable = unpaid.filter { currencyOf($0) == currency }
         return HStack(spacing: 16) {
-            kpi("Unpaid", value: money(sum(unpaidCountable)), detail: "\(unpaid.count) invoice\(unpaid.count == 1 ? "" : "s") open",
+            kpi("Offen", value: money(sum(unpaidCountable)), detail: "\(plural(unpaid.count)) offen",
                 icon: "tray.full", tint: .orange)
-            kpi("Paid", value: money(sum(countable.filter { $0.status == .paid })),
-                detail: plural(inPeriod.filter { $0.status == .paid }.count, "invoice"), icon: "checkmark.circle", tint: .green)
-            kpi("Total", value: money(sum(countable)), detail: plural(inPeriod.count, "invoice"), icon: "sum", tint: .blue)
-            kpi("Needs a look", value: "\(model.library.records.filter(\.needsReview).count)",
-                detail: "\(model.library.skipped.count) skipped", icon: "exclamationmark.bubble", tint: .purple)
+            kpi("Bezahlt", value: money(sum(countable.filter { $0.status == .paid })),
+                detail: plural(inPeriod.filter { $0.status == .paid }.count), icon: "checkmark.circle", tint: .green)
+            kpi("Gesamt", value: money(sum(countable)), detail: plural(inPeriod.count), icon: "sum", tint: .blue)
+            kpi("Zu prüfen", value: "\(model.library.records.filter(\.needsReview).count)",
+                detail: "\(model.library.skipped.count) übersprungen", icon: "exclamationmark.bubble", tint: .purple)
         }
     }
 
-    private func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
+    private func plural(_ n: Int) -> String { n == 1 ? "1 Rechnung" : "\(n) Rechnungen" }
 
     private func kpi(_ title: String, value: String, detail: String, icon: String, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -173,11 +173,11 @@ struct DashboardView: View {
 
     private var monthlyChart: some View {
         Chart(monthly) { m in
-            BarMark(x: .value("Date", m.month, unit: bucket), y: .value("Amount", m.amount))
+            BarMark(x: .value("Datum", m.month, unit: bucket), y: .value("Betrag", m.amount))
                 .foregroundStyle(by: .value("Status", m.status))
                 .cornerRadius(4)
         }
-        .chartForegroundStyleScale(["Unpaid": Color.orange, "Paid": Color.green])
+        .chartForegroundStyleScale(["Offen": Color.orange, "Bezahlt": Color.green])
         .chartXScale(domain: monthDomain)
         .chartXAxis {
             AxisMarks(values: .stride(by: bucket, count: period == .thisMonth ? 5 : 1)) { _ in
@@ -187,7 +187,7 @@ struct DashboardView: View {
         }
         .chartYAxis { AxisMarks { v in AxisGridLine(); AxisValueLabel { if let d = v.as(Double.self) { Text(money(d)) } } } }
         .frame(height: 240)
-        .overlay { if countable.isEmpty { Text("No invoices in this period").foregroundStyle(.secondary) } }
+        .overlay { if countable.isEmpty { Text("Keine Rechnungen im Zeitraum").foregroundStyle(.secondary) } }
     }
 
     /// Shows every day or month of the period, including ones without invoices.
@@ -201,26 +201,26 @@ struct DashboardView: View {
     private var companiesChart: some View {
         let data = topCompanies
         return Chart(data) { c in
-            BarMark(x: .value("Amount", c.value), y: .value("Company", c.name))
+            BarMark(x: .value("Betrag", c.value), y: .value("Firma", c.name))
                 .foregroundStyle(Color.accentColor.gradient)
                 .cornerRadius(4)
                 .annotation(position: .trailing) { Text(money(c.value)).font(.caption).foregroundStyle(.secondary) }
         }
         .chartXAxis(.hidden)
-        .overlay { if data.isEmpty { Text("No invoices in this period").foregroundStyle(.secondary) } }
+        .overlay { if data.isEmpty { Text("Keine Rechnungen im Zeitraum").foregroundStyle(.secondary) } }
         .frame(height: CGFloat(max(data.count, 1)) * 34 + 10)
     }
 
     private var sourcesChart: some View {
         Chart(sources) { s in
-            SectorMark(angle: .value("Invoices", s.value), innerRadius: .ratio(0.6), angularInset: 2)
-                .foregroundStyle(by: .value("Source", s.name))
+            SectorMark(angle: .value("Rechnungen", s.value), innerRadius: .ratio(0.6), angularInset: 2)
+                .foregroundStyle(by: .value("Quelle", s.name))
                 .cornerRadius(4)
         }
-        .chartForegroundStyleScale([ExtractionSource.eInvoiceXML.rawValue: Color.green, ExtractionSource.appleIntelligence.rawValue: Color.blue,
-                                    ExtractionSource.textRules.rawValue: Color.orange, ExtractionSource.manual.rawValue: Color.gray])
+        .chartForegroundStyleScale([ExtractionSource.eInvoiceXML.label: Color.green, ExtractionSource.appleIntelligence.label: Color.blue,
+                                    ExtractionSource.textRules.label: Color.orange, ExtractionSource.manual.label: Color.gray])
         .chartLegend(position: .bottom, alignment: .leading)
-        .overlay { if sources.isEmpty { Text("No invoices in this period").foregroundStyle(.secondary) } }
+        .overlay { if sources.isEmpty { Text("Keine Rechnungen im Zeitraum").foregroundStyle(.secondary) } }
         .frame(height: 220)
     }
 
@@ -228,12 +228,12 @@ struct DashboardView: View {
         let open = model.library.records.filter { $0.status == .unpaid }.sorted { date($0) < date($1) }.prefix(8)
         return VStack(spacing: 0) {
             if open.isEmpty {
-                Text("Everything is paid.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                Text("Alles bezahlt.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             ForEach(Array(open)) { r in
                 Button { self.open(r.id) } label: {
                     HStack {
-                        Text(r.fields.seller.isEmpty ? "Unknown company" : r.fields.seller).lineLimit(1)
+                        Text(r.fields.seller.isEmpty ? "Unbekannte Firma" : r.fields.seller).lineLimit(1)
                         Text(r.fields.invoiceNumber).foregroundStyle(.secondary).lineLimit(1)
                         Spacer()
                         Text(daysOpen(r)).foregroundStyle(.secondary)
@@ -251,6 +251,6 @@ struct DashboardView: View {
 
     private func daysOpen(_ r: InvoiceRecord) -> String {
         let days = Calendar.current.dateComponents([.day], from: date(r), to: Date()).day ?? 0
-        return days <= 0 ? "today" : "\(days) days"
+        return days <= 0 ? "heute" : days == 1 ? "1 Tag" : "\(days) Tage"
     }
 }

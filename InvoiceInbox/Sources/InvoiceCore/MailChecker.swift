@@ -8,10 +8,11 @@ public struct CheckSummary: Sendable, Equatable {
     public var errors: [String] = []
 
     public var text: String {
-        if messages == 0 { return "No new mail" }
-        var parts = ["\(messages) new mail\(messages == 1 ? "" : "s")", "\(filed) invoice\(filed == 1 ? "" : "s") filed"]
-        if skipped > 0 { parts.append("\(skipped) other PDF\(skipped == 1 ? "" : "s") skipped") }
-        if !errors.isEmpty { parts.append("\(errors.count) error\(errors.count == 1 ? "" : "s")") }
+        if messages == 0 { return "Keine neuen Mails" }
+        var parts = [messages == 1 ? "1 neue Mail" : "\(messages) neue Mails",
+                     filed == 1 ? "1 Rechnung abgelegt" : "\(filed) Rechnungen abgelegt"]
+        if skipped > 0 { parts.append(skipped == 1 ? "1 anderes PDF übersprungen" : "\(skipped) andere PDFs übersprungen") }
+        if !errors.isEmpty { parts.append(errors.count == 1 ? "1 Fehler" : "\(errors.count) Fehler") }
         return parts.joined(separator: ", ")
     }
 }
@@ -21,9 +22,9 @@ public enum MailChecker {
     @MainActor
     public static func check(library: Library, password: String, progress: @MainActor (String) -> Void = { _ in }) async throws -> CheckSummary {
         let s = library.settings
-        guard s.isMailConfigured else { throw IMAPError(message: "Enter the mail account in Settings first") }
-        guard s.isFolderConfigured else { throw IMAPError(message: "Choose the main folder in Settings first") }
-        progress("Connecting to \(s.imapHost)…")
+        guard s.isMailConfigured else { throw IMAPError(message: "Bitte zuerst das Mailkonto in den Einstellungen eintragen") }
+        guard s.isFolderConfigured else { throw IMAPError(message: "Bitte zuerst den Hauptordner in den Einstellungen wählen") }
+        progress("Verbinde mit \(s.imapHost) …")
         let client = IMAPClient(host: s.imapHost, port: s.imapPort, useTLS: s.useTLS)
         defer { Task { await client.logout() } }
         try await client.connect(username: s.username, password: password)
@@ -34,7 +35,7 @@ public enum MailChecker {
         var summary = CheckSummary()
         let extractor = Extractor(useAppleIntelligence: s.useAppleIntelligence)
         for (n, uid) in uids.enumerated() {
-            progress("Reading mail \(n + 1) of \(uids.count)…")
+            progress("Lese Mail \(n + 1) von \(uids.count) …")
             if let raw = try await client.fetch(uid: uid) {
                 summary.messages += 1
                 let mail = MIME.parse(raw)

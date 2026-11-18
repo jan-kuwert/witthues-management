@@ -8,6 +8,8 @@ public final class Library {
     public private(set) var records: [InvoiceRecord] = []
     public private(set) var skipped: [SkippedAttachment] = []
     public var settings: AppSettings { didSet { if settings != oldValue { saveSettings() } } }
+    /// Saved archive views, kept in views.json.
+    public var views: [SavedView] { didSet { if views != oldValue { saveViews() } } }
     private var cursors: [String: MailboxCursor] = [:]
 
     public let directory: URL
@@ -30,6 +32,7 @@ public final class Library {
         try? FileManager.default.createDirectory(at: directory.appendingPathComponent("Skipped"), withIntermediateDirectories: true)
         let decoder = JSONDecoder()
         settings = (try? decoder.decode(AppSettings.self, from: Data(contentsOf: directory.appendingPathComponent("settings.json")))) ?? AppSettings()
+        views = (try? decoder.decode([SavedView].self, from: Data(contentsOf: directory.appendingPathComponent("views.json")))) ?? []
         if let stored = try? decoder.decode(Stored.self, from: Data(contentsOf: directory.appendingPathComponent("library.json"))) {
             records = stored.records
             skipped = stored.skipped
@@ -92,7 +95,7 @@ public final class Library {
             save()
             return .skipped(s)
         }
-        guard settings.isFolderConfigured else { throw IMAPError(message: "Choose the main folder in Settings first") }
+        guard settings.isFolderConfigured else { throw IMAPError(message: "Bitte zuerst den Hauptordner in den Einstellungen wählen") }
         let url = try organizer.save(data, ext: Self.ext(fileName), fields: x.fields)
         if let (xml, _) = companionXML {
             try? xml.data.write(to: url.deletingPathExtension().appendingPathExtension("xml"), options: .withoutOverwriting)
@@ -190,6 +193,12 @@ public final class Library {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(Stored(records: records, skipped: skipped, cursors: cursors)) {
             try? data.write(to: directory.appendingPathComponent("library.json"), options: .atomic)
+        }
+    }
+
+    private func saveViews() {
+        if let data = try? JSONEncoder().encode(views) {
+            try? data.write(to: directory.appendingPathComponent("views.json"), options: .atomic)
         }
     }
 

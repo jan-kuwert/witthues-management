@@ -7,7 +7,7 @@ struct InvoiceInboxApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {
-        Window("Invoice Inbox", id: "main") {
+        Window("Witthüs", id: "main") {
             MainView()
                 .environment(model)
                 .frame(minWidth: 980, minHeight: 600)
@@ -15,7 +15,7 @@ struct InvoiceInboxApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("Check Mail Now") { model.checkNow() }
+                Button("Mails jetzt abrufen") { model.checkNow() }
                     .keyboardShortcut("r")
                     .disabled(model.isChecking)
             }
@@ -45,9 +45,9 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Invoice Inbox").font(.headline)
+                Text("Witthüs").font(.headline)
                 Spacer()
-                Text("\(model.unpaidCount) unpaid").foregroundStyle(.secondary)
+                Text("\(model.unpaidCount) offen").foregroundStyle(.secondary)
             }
             StatusLine()
             GlassEffectContainer {
@@ -55,11 +55,11 @@ struct MenuBarView: View {
                     Button {
                         model.checkNow()
                     } label: {
-                        Label("Check now", systemImage: "arrow.clockwise")
+                        Label("Jetzt abrufen", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.glassProminent)
                     .disabled(model.isChecking)
-                    Button("Open") {
+                    Button("Öffnen") {
                         openWindow(id: "main")
                         NSApp.activate()
                     }
@@ -78,7 +78,7 @@ struct MenuBarView: View {
                         Image(systemName: "power")
                     }
                     .buttonStyle(.glass)
-                    .help("Quit; mail is no longer checked")
+                    .help("Beenden; Mails werden dann nicht mehr abgerufen")
                 }
             }
             if !model.library.records.isEmpty {
@@ -113,7 +113,7 @@ struct StatusLine: View {
         HStack(spacing: 6) {
             if model.isChecking {
                 ProgressView().controlSize(.small)
-                Text(model.progress.isEmpty ? "Checking mail…" : model.progress)
+                Text(model.progress.isEmpty ? "Mails werden abgerufen …" : model.progress)
             } else if let error = model.lastError {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(error).lineLimit(3)
@@ -122,7 +122,7 @@ struct StatusLine: View {
                 Text("\(model.lastResult) · \(last.formatted(date: .omitted, time: .shortened))")
             } else {
                 Image(systemName: "clock")
-                Text("Not checked yet")
+                Text("Noch nicht abgerufen")
             }
         }
         .font(.callout)

@@ -26,6 +26,16 @@ public enum ExtractionSource: String, Codable, Sendable {
     case appleIntelligence = "Apple Intelligence"
     case textRules = "Text rules"
     case manual = "Edited by hand"
+
+    /// German name shown in the app. The raw value stays English because it is stored in library.json.
+    public var label: String {
+        switch self {
+        case .eInvoiceXML: return "E-Rechnung (XML)"
+        case .appleIntelligence: return "Apple Intelligence"
+        case .textRules: return "Textregeln"
+        case .manual: return "Von Hand bearbeitet"
+        }
+    }
 }
 
 public enum InvoiceStatus: String, Codable, Sendable {
@@ -107,5 +117,50 @@ public struct MailboxCursor: Codable, Equatable, Sendable {
     public init(uidValidity: UInt32, lastUID: UInt32) {
         self.uidValidity = uidValidity
         self.lastUID = lastUID
+    }
+}
+
+/// A named set of archive filters the user saved. Starred views appear in the sidebar.
+public struct SavedView: Codable, Identifiable, Equatable, Sendable {
+    public enum Status: String, Codable, CaseIterable, Sendable {
+        case all = "All", unpaid = "Unpaid", paid = "Paid"
+
+        /// German name shown in the app; the raw value is stored in views.json.
+        public var label: String {
+            switch self {
+            case .all: return "Alle"
+            case .unpaid: return "Offen"
+            case .paid: return "Bezahlt"
+            }
+        }
+    }
+
+    public var id: UUID
+    public var name: String
+    public var starred: Bool
+    /// Folder relative to the main folder; nil means every folder.
+    public var folder: String?
+    public var status: Status
+    /// Invoice year; 0 means every year.
+    public var year: Int
+    public var onlyNeedsCheck: Bool
+    public var search: String
+
+    public init(id: UUID = UUID(), name: String = "", starred: Bool = true, folder: String? = nil, status: Status = .all,
+                year: Int = 0, onlyNeedsCheck: Bool = false, search: String = "") {
+        self.id = id
+        self.name = name
+        self.starred = starred
+        self.folder = folder
+        self.status = status
+        self.year = year
+        self.onlyNeedsCheck = onlyNeedsCheck
+        self.search = search
+    }
+
+    /// True when both views filter the same way, whatever their name or star.
+    public func sameFilters(as other: SavedView) -> Bool {
+        folder == other.folder && status == other.status && year == other.year
+            && onlyNeedsCheck == other.onlyNeedsCheck && search == other.search
     }
 }

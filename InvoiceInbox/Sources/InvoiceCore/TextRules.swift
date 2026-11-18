@@ -21,20 +21,20 @@ public enum TextRules {
     public static func looksLikeInvoice(text: String, fileName: String, subject: String) -> (Bool, String) {
         let name = fileName.lowercased()
         if let word = notInvoiceWords.first(where: { name.contains($0) }) {
-            return (false, "File name contains “\(word)”")
+            return (false, "Dateiname enthält „\(word)“")
         }
         let head = String(text.lowercased().prefix(1500))
         let haystack = name + " " + subject.lowercased() + " " + head
         guard invoiceWords.contains(where: { haystack.contains($0) }) else {
-            return (false, "No invoice wording in file name, subject or first page")
+            return (false, "Kein Hinweis auf eine Rechnung in Dateiname, Betreff oder erster Seite")
         }
         if let word = notInvoiceWords.first(where: { head.prefix(300).contains($0) }),
            !invoiceWords.contains(where: { head.prefix(300).contains($0) }) {
-            return (false, "Document starts with “\(word)”")
+            return (false, "Dokument beginnt mit „\(word)“")
         }
         let f = extract(text: text)
         guard !f.invoiceNumber.isEmpty || f.total != nil else {
-            return (false, "Found no invoice number or total")
+            return (false, "Weder Rechnungsnummer noch Betrag gefunden")
         }
         return (true, "")
     }

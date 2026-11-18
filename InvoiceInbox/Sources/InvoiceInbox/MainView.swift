@@ -5,6 +5,10 @@ import UniformTypeIdentifiers
 
 enum SidebarItem: Hashable {
     case dashboard, unpaid, paid, review, all, skipped
+    /// A folder in the archive table; nil is every file.
+    case archive(String?)
+    /// A saved archive view.
+    case view(SavedView.ID)
 }
 
 struct MainView: View {
@@ -16,6 +20,9 @@ struct MainView: View {
     @State private var dropTargeted = false
     /// An invoice the dashboard asked to open; selected once the list has switched.
     @State private var pendingOpen: InvoiceRecord.ID?
+    /// The saved view being renamed from the sidebar.
+    @State private var renaming: SavedView?
+    @State private var newViewName = ""
 
     var body: some View {
         Group {
@@ -24,10 +31,15 @@ struct MainView: View {
                 NavigationSplitView {
                     sidebarList
                 } detail: {
-                    DashboardView { id in
-                        pendingOpen = id
-                        sidebar = .all
-                    }
+                    DashboardView { id in openInvoice(id) }
+                }
+            } else if let (start, viewID) = archiveStart {
+                // Two columns, so the table gets the full width.
+                NavigationSplitView {
+                    sidebarList
+                } detail: {
+                    ArchiveView(start: start, viewID: viewID, open: openInvoice) { sidebar = .view($0) }
+                        .id(sidebar)
                 }
             } else {
                 invoiceSplitView
@@ -38,14 +50,14 @@ struct MainView: View {
                 Button {
                     model.checkNow()
                 } label: {
-                    Label("Check mail", systemImage: "arrow.clockwise")
+                    Label("Mails abrufen", systemImage: "arrow.clockwise")
                 }
                 .disabled(model.isChecking)
-                .help("Check for new invoices now (⌘R)")
+                .help("Jetzt nach neuen Rechnungen suchen (⌘R)")
                 Button {
                     openSettings()
                 } label: {
-                    Label("Settings", systemImage: "gearshape")
+                    Label("Einstellungen", systemImage: "gearshape")
                 }
             }
         }
@@ -63,11 +75,23 @@ struct MainView: View {
         }
         .overlay {
             if dropTargeted {
-                Label("Drop PDFs or e-invoice XML to file them", systemImage: "square.and.arrow.down")
+                Label("PDFs oder E-Rechnungen (XML) hier ablegen", systemImage: "square.and.arrow.down")
                     .font(.title3)
                     .padding(24)
                     .glassEffect(.regular, in: .rect(cornerRadius: 20))
             }
+        }
+        .alert("Ansicht umbenennen", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $newViewName)
+            Button("Umbenennen") {
+                if let id = renaming?.id, let i = model.library.views.firstIndex(where: { $0.id == id }),
+                   !newViewName.trimmingCharacters(in: .whitespaces).isEmpty {
+                    model.library.views[i].name = newViewName.trimmingCharacters(in: .whitespaces)
+                }
+                renaming = nil
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Abbrechen", role: .cancel) { renaming = nil }
         }
         .onChange(of: sidebar) {
             selection = pendingOpen
@@ -78,16 +102,37 @@ struct MainView: View {
     private var sidebarList: some View {
         List(selection: $sidebar) {
             Section {
-                Label("Dashboard", systemImage: "chart.bar.xaxis").tag(SidebarItem.dashboard)
+                Label("Übersicht", systemImage: "chart.bar.xaxis").tag(SidebarItem.dashboard)
             }
-            Section("Invoices") {
-                row(.unpaid, "Unpaid", "tray.full", model.library.records.filter { $0.status == .unpaid }.count)
-                row(.paid, "Paid", "archivebox", model.library.records.filter { $0.status == .paid }.count)
-                row(.review, "Needs a look", "exclamationmark.bubble", model.library.records.filter(\.needsReview).count)
-                row(.all, "All", "doc.on.doc", model.library.records.count)
+            Section("Rechnungen") {
+                row(.unpaid, "Offen", "tray.full", model.library.records.filter { $0.status == .unpaid }.count)
+                row(.paid, "Bezahlt", "archivebox", model.library.records.filter { $0.status == .paid }.count)
+                row(.review, "Zu prüfen", "exclamationmark.bubble", model.library.records.filter(\.needsReview).count)
+                row(.all, "Alle", "doc.on.doc", model.library.records.count)
+            }
+            Section("Archiv") {
+                row(.archive(nil), "Alle Dateien", "tablecells", model.library.records.count)
+                ForEach(ArchiveFolders.list(model.library), id: \.path) { f in
+                    row(.archive(f.path), f.path, f.path == model.library.settings.unpaidFolder ? "folder.badge.questionmark" : "folder", f.count)
+                }
+            }
+            let starred = model.library.views.filter(\.starred)
+            if !starred.isEmpty {
+                Section("Ansichten") {
+                    ForEach(starred) { v in
+                        Label(v.name, systemImage: "star.fill")
+                            .tag(SidebarItem.view(v.id))
+                            .contextMenu {
+                                Button("Umbenennen …") { renaming = v; newViewName = v.name }
+                                Button("Stern entfernen") { setStar(v.id, false) }
+                                Divider()
+                                Button("Ansicht löschen", role: .destructive) { deleteView(v.id) }
+                            }
+                    }
+                }
             }
             Section("Mail") {
-                row(.skipped, "Not invoices", "tray.and.arrow.down", model.library.skipped.count)
+                row(.skipped, "Keine Rechnungen", "tray.and.arrow.down", model.library.skipped.count)
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 210)
@@ -112,7 +157,7 @@ struct MainView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-            .searchable(text: $search, placement: .toolbar, prompt: "Company, number, amount")
+            .searchable(text: $search, placement: .toolbar, prompt: "Firma, Nummer, Betrag")
         } detail: {
             if let id = selection, sidebar != .skipped, model.library.records.contains(where: { $0.id == id }) {
                 InvoiceDetail(id: id).id(id)
@@ -120,6 +165,34 @@ struct MainView: View {
                 EmptyDetail()
             }
         }
+    }
+
+    /// The archive filters to start from for the selected sidebar item, if it is an archive folder or view.
+    private var archiveStart: (SavedView, SavedView.ID?)? {
+        switch sidebar {
+        case .archive(let folder): return (SavedView(folder: folder), nil)
+        case .view(let id):
+            guard let v = model.library.views.first(where: { $0.id == id }) else { return (SavedView(), nil) }
+            return (v, id)
+        default: return nil
+        }
+    }
+
+    private func setStar(_ id: SavedView.ID, _ starred: Bool) {
+        guard let i = model.library.views.firstIndex(where: { $0.id == id }) else { return }
+        model.library.views[i].starred = starred
+        if !starred, sidebar == .view(id) { sidebar = .archive(nil) }
+    }
+
+    private func deleteView(_ id: SavedView.ID) {
+        if sidebar == .view(id) { sidebar = .archive(nil) }
+        model.library.views.removeAll { $0.id == id }
+    }
+
+    /// Shows an invoice in the "All" list with its detail open.
+    private func openInvoice(_ id: InvoiceRecord.ID) {
+        pendingOpen = id
+        sidebar = .all
     }
 
     private func row(_ item: SidebarItem, _ title: String, _ icon: String, _ count: Int) -> some View {
@@ -134,7 +207,7 @@ struct MainView: View {
         case .unpaid: list = list.filter { $0.status == .unpaid }
         case .paid: list = list.filter { $0.status == .paid }
         case .review: list = list.filter(\.needsReview)
-        case .all, .skipped, .dashboard: break
+        case .all, .skipped, .dashboard, .archive, .view: break
         }
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
@@ -155,11 +228,11 @@ struct EmptyDetail: View {
         VStack(spacing: 14) {
             Image(systemName: "doc.text.magnifyingglass").font(.system(size: 44)).foregroundStyle(.secondary)
             if !model.library.settings.isFolderConfigured || !model.library.settings.isMailConfigured {
-                Text("Choose the main folder and enter the mail account to start.")
+                Text("Zum Start den Hauptordner wählen und das Mailkonto eintragen.")
                     .foregroundStyle(.secondary)
-                Button("Open Settings") { openSettings() }.buttonStyle(.glassProminent)
+                Button("Einstellungen öffnen") { openSettings() }.buttonStyle(.glassProminent)
             } else {
-                Text("Select an invoice, or drop PDFs here.").foregroundStyle(.secondary)
+                Text("Rechnung auswählen oder PDFs hier ablegen.").foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -176,17 +249,17 @@ struct InvoiceList: View {
             InvoiceRow(record: r)
                 .tag(r.id)
                 .contextMenu {
-                    Button(r.status == .paid ? "Mark as unpaid" : "Mark as paid") {
+                    Button(r.status == .paid ? "Als offen markieren" : "Als bezahlt markieren") {
                         do { try model.library.setPaid(r.id, r.status != .paid) } catch { model.lastError = error.localizedDescription }
                     }
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
+                    Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                     Divider()
-                    Button("Remove from list (keeps the file)", role: .destructive) { model.library.remove(r.id) }
+                    Button("Aus der Liste entfernen (Datei bleibt)", role: .destructive) { model.library.remove(r.id) }
                 }
         }
         .overlay {
             if records.isEmpty {
-                ContentUnavailableView("No invoices", systemImage: "tray", description: Text("New invoices from mail appear here."))
+                ContentUnavailableView("Keine Rechnungen", systemImage: "tray", description: Text("Neue Rechnungen aus den Mails erscheinen hier."))
             }
         }
     }
@@ -202,7 +275,7 @@ struct InvoiceRow: View {
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Text(record.fields.seller.isEmpty ? "Unknown company" : record.fields.seller)
+                    Text(record.fields.seller.isEmpty ? "Unbekannte Firma" : record.fields.seller)
                         .fontWeight(.medium).lineLimit(1)
                     Spacer()
                     if let total = record.fields.total {
@@ -210,13 +283,13 @@ struct InvoiceRow: View {
                     }
                 }
                 HStack {
-                    Text(record.fields.invoiceNumber.isEmpty ? "No number" : record.fields.invoiceNumber)
+                    Text(record.fields.invoiceNumber.isEmpty ? "Ohne Nummer" : record.fields.invoiceNumber)
                     Spacer()
-                    Text(record.fields.invoiceDate?.formatted(date: .numeric, time: .omitted) ?? "No date")
+                    Text(record.fields.invoiceDate?.formatted(date: .numeric, time: .omitted) ?? "Ohne Datum")
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 if record.fileMissing {
-                    Text("File was moved or deleted").font(.caption).foregroundStyle(.red)
+                    Text("Datei wurde verschoben oder gelöscht").font(.caption).foregroundStyle(.red)
                 } else if record.needsReview {
                     Text(record.reviewReasons.first ?? "").font(.caption).foregroundStyle(.orange).lineLimit(1)
                 }
@@ -272,12 +345,12 @@ struct InvoiceDetail: View {
 
     private func header(_ r: InvoiceRecord) -> some View {
         HStack {
-            Label(r.source.rawValue, systemImage: r.source == .eInvoiceXML ? "checkmark.seal.fill" : r.source == .appleIntelligence ? "apple.intelligence" : "text.viewfinder")
+            Label(r.source.label, systemImage: r.source == .eInvoiceXML ? "checkmark.seal.fill" : r.source == .appleIntelligence ? "apple.intelligence" : "text.viewfinder")
                 .font(.caption)
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .glassEffect(.regular.tint(r.source == .eInvoiceXML ? .green.opacity(0.3) : .clear), in: .capsule)
             Spacer()
-            Text(r.status == .paid ? "Paid" : "Unpaid")
+            Text(r.status == .paid ? "Bezahlt" : "Offen")
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .glassEffect(.regular.tint(r.status == .paid ? .green.opacity(0.35) : .orange.opacity(0.35)), in: .capsule)
@@ -286,9 +359,9 @@ struct InvoiceDetail: View {
 
     private func reviewBox(_ r: InvoiceRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Please check", systemImage: "exclamationmark.triangle.fill").font(.headline).foregroundStyle(.orange)
+            Label("Bitte prüfen", systemImage: "exclamationmark.triangle.fill").font(.headline).foregroundStyle(.orange)
             ForEach(r.reviewReasons, id: \.self) { Text("• \($0)").font(.callout) }
-            Button("Looks right") { model.library.markReviewed(id) }.buttonStyle(.glass)
+            Button("Passt so") { model.library.markReviewed(id) }.buttonStyle(.glass)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -297,20 +370,20 @@ struct InvoiceDetail: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 10) {
-            field("Company (sender)", text: $fields.seller)
-            field("Invoice number", text: $fields.invoiceNumber)
+            field("Firma (Absender)", text: $fields.seller)
+            field("Rechnungsnummer", text: $fields.invoiceNumber)
             HStack {
-                Toggle("Date", isOn: $hasDate).toggleStyle(.checkbox)
+                Toggle("Datum", isOn: $hasDate).toggleStyle(.checkbox)
                 Spacer()
                 DatePicker("", selection: Binding(get: { fields.invoiceDate ?? Date() }, set: { fields.invoiceDate = $0 }),
                            displayedComponents: .date)
                     .labelsHidden().disabled(!hasDate)
             }
             HStack {
-                field("Total", text: $totalText)
-                field("Currency", text: $fields.currency).frame(width: 80)
+                field("Betrag", text: $totalText)
+                field("Währung", text: $fields.currency).frame(width: 80)
             }
-            field("Addressed to", text: $fields.buyer)
+            field("Empfänger", text: $fields.buyer)
         }
         .padding(12)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
@@ -328,33 +401,33 @@ struct InvoiceDetail: View {
         let newPath = model.library.organizer.relativePath(for: edited, status: r.status, paidDate: r.paidDate,
                                                            ext: r.fileURL.pathExtension.isEmpty ? "pdf" : r.fileURL.pathExtension)
         return VStack(alignment: .leading, spacing: 10) {
-            Text("File").font(.caption).foregroundStyle(.secondary)
+            Text("Datei").font(.caption).foregroundStyle(.secondary)
             Text(newPath).font(.callout.monospaced()).textSelection(.enabled)
             GlassEffectContainer {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Button("Save & rename") { apply(status: r.status, paidDate: r.paidDate) }
+                        Button("Speichern & umbenennen") { apply(status: r.status, paidDate: r.paidDate) }
                             .buttonStyle(.glass)
                             .disabled(edited == r.fields)
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
+                        Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                             .buttonStyle(.glass)
                     }
                     if r.status == .unpaid {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Paid on").font(.caption).foregroundStyle(.secondary)
+                            Text("Bezahlt am").font(.caption).foregroundStyle(.secondary)
                             HStack {
-                                DatePicker("Paid on", selection: $paidDate, displayedComponents: .date).labelsHidden()
+                                DatePicker("Bezahlt am", selection: $paidDate, displayedComponents: .date).labelsHidden()
                                 Spacer(minLength: 8)
-                                Button("Mark as paid") { apply(status: .paid, paidDate: paidDate) }
+                                Button("Als bezahlt markieren") { apply(status: .paid, paidDate: paidDate) }
                                     .buttonStyle(.glassProminent)
                                     .fixedSize()
                             }
                         }
                     } else {
                         HStack {
-                            Text("Paid on \(r.paidDate?.formatted(date: .numeric, time: .omitted) ?? "–")")
+                            Text("Bezahlt am \(r.paidDate?.formatted(date: .numeric, time: .omitted) ?? "–")")
                             Spacer()
-                            Button("Mark as unpaid") { apply(status: .unpaid, paidDate: nil) }.buttonStyle(.glass)
+                            Button("Als offen markieren") { apply(status: .unpaid, paidDate: nil) }.buttonStyle(.glass)
                         }
                     }
                 }
@@ -366,7 +439,7 @@ struct InvoiceDetail: View {
 
     private func origin(_ r: InvoiceRecord) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("From mail").font(.caption).foregroundStyle(.secondary)
+            Text("Aus Mail").font(.caption).foregroundStyle(.secondary)
             Text(r.origin.subject).font(.callout)
             Text(r.origin.from).font(.caption).foregroundStyle(.secondary)
             Text(r.origin.attachmentName).font(.caption).foregroundStyle(.secondary)
@@ -431,15 +504,15 @@ struct SkippedList: View {
                 Text(s.origin.subject).font(.caption)
                 Text(s.reason).font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("File as invoice") {
+                    Button("Als Rechnung ablegen") {
                         Task {
                             do { try await model.library.importSkipped(s.id, extractor: model.extractor) }
                             catch { model.lastError = error.localizedDescription }
                         }
                     }
                     .buttonStyle(.glass)
-                    Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: s.storedPath)) }.buttonStyle(.glass)
-                    Button("Delete", role: .destructive) { model.library.deleteSkipped(s.id) }.buttonStyle(.glass)
+                    Button("Öffnen") { NSWorkspace.shared.open(URL(fileURLWithPath: s.storedPath)) }.buttonStyle(.glass)
+                    Button("Löschen", role: .destructive) { model.library.deleteSkipped(s.id) }.buttonStyle(.glass)
                 }
                 .controlSize(.small)
             }
@@ -447,8 +520,8 @@ struct SkippedList: View {
         }
         .overlay {
             if model.library.skipped.isEmpty {
-                ContentUnavailableView("Nothing skipped", systemImage: "tray",
-                                       description: Text("PDFs from mail that don't look like invoices appear here."))
+                ContentUnavailableView("Nichts übersprungen", systemImage: "tray",
+                                       description: Text("PDFs aus Mails, die keine Rechnungen sind, erscheinen hier."))
             }
         }
     }
