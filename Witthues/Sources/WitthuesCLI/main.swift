@@ -22,7 +22,7 @@ func show(_ x: Extraction, name: String) {
     print("   number:   \(f.invoiceNumber)")
     print("   date:     \(f.invoiceDate.map(df.string) ?? "-")")
     print("   total:    \(f.total.map { "\($0)" } ?? "-") \(f.currency)")
-    print("   file:     \(organizer.relativePath(for: f, status: .unpaid, paidDate: nil))")
+    print("   file:     \(organizer.relativePath(for: f, stage: .open, paidDate: nil))")
     if !x.reviewReasons.isEmpty { print("   check:    \(x.reviewReasons.joined(separator: "; "))") }
 }
 

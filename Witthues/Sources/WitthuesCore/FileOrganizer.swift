@@ -10,9 +10,8 @@ public struct FileOrganizer: Sendable {
 
     public var rootURL: URL { URL(fileURLWithPath: settings.rootFolder, isDirectory: true) }
 
-    public func folder(for fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?) -> URL {
-        let template = status == .paid ? settings.paidFolder : settings.unpaidFolder
-        let relative = PathTemplate.render(template, fields: fields, paidDate: paidDate)
+    public func folder(for fields: InvoiceFields, stage: Stage, paidDate: Date?) -> URL {
+        let relative = PathTemplate.render(settings.folderTemplate(stage), fields: fields, paidDate: paidDate)
         // Templates may use "/" for subfolders, such as "{yyyy}/{yyyy}-{mm}".
         return relative.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0 != ".." }
             .reduce(rootURL) { $0.appendingPathComponent($1, isDirectory: true) }
@@ -33,25 +32,27 @@ public struct FileOrganizer: Sendable {
     }
 
     /// Where a file with these fields belongs, relative to the main folder, for previews.
-    public func relativePath(for fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, ext: String = "pdf") -> String {
-        let folder = folder(for: fields, status: status, paidDate: paidDate).path
+    public func relativePath(for fields: InvoiceFields, stage: Stage, paidDate: Date?, ext: String = "pdf") -> String {
+        let folder = folder(for: fields, stage: stage, paidDate: paidDate).path
         let rel = folder.hasPrefix(rootURL.path) ? String(folder.dropFirst(rootURL.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")) : folder
         return (rel.isEmpty ? "" : rel + "/") + baseName(for: fields, paidDate: paidDate) + "." + ext
     }
 
     /// Writes new data into its folder, creating folders as needed. Never overwrites another file.
-    public func save(_ data: Data, ext: String, fields: InvoiceFields, status: InvoiceStatus = .unpaid, paidDate: Date? = nil) throws -> URL {
-        let target = try uniqueURL(fields: fields, status: status, paidDate: paidDate, ext: ext, current: nil)
+    public func save(_ data: Data, ext: String, fields: InvoiceFields, stage: Stage = .open, paidDate: Date? = nil) throws -> URL {
+        let target = try uniqueURL(fields: fields, stage: stage, paidDate: paidDate, ext: ext, current: nil)
         try data.write(to: target, options: .withoutOverwriting)
         return target
     }
 
     /// Moves an existing file to where its fields and status say it belongs, under the given name when set.
     /// Returns the new location.
-    public func place(_ current: URL, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, name: String? = nil) throws -> URL {
+    /// `keepFolder` leaves it in the folder it is in and only renames it.
+    public func place(_ current: URL, fields: InvoiceFields, stage: Stage, paidDate: Date?, name: String? = nil,
+                      keepFolder: Bool = false) throws -> URL {
         let ext = current.pathExtension.isEmpty ? "pdf" : current.pathExtension
-        let target = try uniqueURL(fields: fields, status: status, paidDate: paidDate, ext: ext, current: current,
-                                   name: name)
+        let target = try uniqueURL(fields: fields, stage: stage, paidDate: paidDate, ext: ext, current: current,
+                                   name: name, folder: keepFolder ? current.deletingLastPathComponent() : nil)
         guard target.standardizedFileURL != current.standardizedFileURL else { return current }
         try FileManager.default.moveItem(at: current, to: target)
         // A matching e-invoice XML filed next to the PDF moves with it.
@@ -62,9 +63,9 @@ public struct FileOrganizer: Sendable {
         return target
     }
 
-    private func uniqueURL(fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, ext: String, current: URL?,
-                           name: String? = nil) throws -> URL {
-        let dir = folder(for: fields, status: status, paidDate: paidDate)
+    private func uniqueURL(fields: InvoiceFields, stage: Stage, paidDate: Date?, ext: String, current: URL?,
+                           name: String? = nil, folder fixed: URL? = nil) throws -> URL {
+        let dir = fixed ?? folder(for: fields, stage: stage, paidDate: paidDate)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let custom = name.map(Self.cleanName) ?? ""
         let base = custom.isEmpty ? baseName(for: fields, paidDate: paidDate) : custom

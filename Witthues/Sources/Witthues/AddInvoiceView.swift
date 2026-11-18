@@ -4,11 +4,13 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WitthuesCore
 
-/// Adds an invoice that is already paid: from Photos, scanned with the iPhone camera, or from files and folders.
-/// It is read like a mail attachment and filed straight into the archive folder.
-struct PaidImportSheet: View {
+/// Adds invoices by hand: from Photos, scanned with the iPhone camera, or from files and folders.
+/// They are read like mail attachments and filed into the folder of the stage the user picks.
+struct AddInvoiceSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @State private var stage = Stage.paid
+    @State private var withDate = true
     @State private var paidDate = Date()
     @State private var photos: [PhotosPickerItem] = []
     @State private var pickingFiles = false
@@ -18,12 +20,18 @@ struct PaidImportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Bezahlte Rechnung hinzufügen").font(.title2.weight(.semibold))
-            Text("Die Rechnung wird gelesen, umbenannt und direkt im Archivordner für bezahlte Rechnungen abgelegt.")
+            Text("Rechnung hinzufügen").font(.title2.weight(.semibold))
+            Text("Als was soll die Rechnung importiert werden?").font(.headline)
+            StagePicker(stage: $stage)
+            Text("Die Rechnung wird gelesen, umbenannt und im Ordner „\(model.library.settings.folderTemplate(stage))“ abgelegt.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            DatePicker("Bezahlt am", selection: $paidDate, displayedComponents: .date)
-                .fixedSize()
+            if stage != .open {
+                HStack {
+                    Toggle("Bezahlt am", isOn: $withDate)
+                    DatePicker("Bezahlt am", selection: $paidDate, displayedComponents: .date).labelsHidden().disabled(!withDate)
+                }
+            }
             HStack(spacing: 12) {
                 PhotosPicker(selection: $photos, matching: .images) {
                     tile("Aus Fotos", "photo.on.rectangle", "Ein oder mehrere Fotos")
@@ -93,7 +101,7 @@ struct PaidImportSheet: View {
         guard !files.isEmpty else { working = false; return }
         working = true
         Task {
-            result = await model.importPaid(files, paidOn: paidDate)
+            result = await model.importFiles(files, stage: stage, paidOn: stage != .open && withDate ? paidDate : nil)
             working = false
         }
     }

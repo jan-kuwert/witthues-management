@@ -120,7 +120,7 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let lib = Library(directory: tmp.appendingPathComponent("data"))
         lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
-        lib.settings.paidFolder = "Archiv/{paid_yyyy}-{paid_mm}"
+        lib.settings.archiveFolder = "Archiv/{paid_yyyy}-{paid_mm}"
         // A portrait PNG, like a phone photo of a receipt.
         let ctx = try #require(CGContext(data: nil, width: 300, height: 600, bitsPerComponent: 8, bytesPerRow: 0,
                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
@@ -133,8 +133,9 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
 
         let ex = Extractor(useAppleIntelligence: false)
         // A blank photo would not pass as an invoice from mail; imported by hand it is filed anyway.
-        let r = try #require(try await lib.ingestPaid(data: png as Data, fileName: "IMG_0001.png", paidOn: day(2026, 4, 9), origin: MailOrigin(), extractor: ex))
-        #expect(r.status == .paid)
+        let r = try #require(try await lib.ingestFile(data: png as Data, fileName: "IMG_0001.png", stage: .archived, paidOn: day(2026, 4, 9),
+                                                      origin: MailOrigin(), extractor: ex))
+        #expect(r.stage == .archived)
         #expect(r.paidDate == day(2026, 4, 9))
         #expect(r.filePath.contains("/Rechnungen/Archiv/2026-04/26-04-09 "))
         // No date could be read from the blank photo, so the payment date stands in and it is flagged.
@@ -146,7 +147,8 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         let page = try #require(CGPDFDocument(CGDataProvider(data: saved as CFData)!)?.page(at: 1))
         #expect(page.getBoxRect(.mediaBox).size == CGSize(width: 595, height: 1190))
         // Importing the same photo again files nothing.
-        #expect(try await lib.ingestPaid(data: png as Data, fileName: "IMG_0001.png", paidOn: day(2026, 4, 9), origin: MailOrigin(), extractor: ex) == nil)
+        #expect(try await lib.ingestFile(data: png as Data, fileName: "IMG_0001.png", stage: .archived, paidOn: day(2026, 4, 9),
+                                         origin: MailOrigin(), extractor: ex) == nil)
         #expect(lib.records.count == 1)
     }
 
@@ -165,10 +167,11 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         // The same attachment from a later mail is not filed twice.
         #expect(try await lib.ingest(data: pdf, fileName: "x.pdf", origin: MailOrigin(), extractor: ex) == .duplicate)
 
-        // Paid in May: the file stays until it is archived, then goes to the invoice month by default.
+        // Paid in May: the file waits in the paid folder until it is archived, then goes to the invoice month by default.
         try lib.setPaid(r.id, true, on: day(2026, 5, 2))
         var paid = try #require(lib.records.first)
-        #expect(paid.filePath == r.filePath && paid.status == .paid && !lib.isArchived(paid))
+        #expect(paid.filePath.hasSuffix("OneDrive/Rechnungen/01 Bezahlt/26-03-05 Musterlieferant ZF-2026-4711.pdf"))
+        #expect(paid.stage == .paid)
         try lib.archive([r.id])
         paid = try #require(lib.records.first)
         #expect(lib.isArchived(paid))
@@ -176,11 +179,12 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(!FileManager.default.fileExists(atPath: r.filePath))
 
         // With a payment-month template, marking unpaid and paid again moves it under the payment month.
-        lib.settings.paidFolder = "Archiv/{paid_yyyy}-{paid_mm}"
+        lib.settings.archiveFolder = "Archiv/{paid_yyyy}-{paid_mm}"
         try lib.setPaid(r.id, false)
         #expect(lib.records.first?.filePath == r.filePath)
+        #expect(lib.records.first?.stage == .open)
         try lib.setPaid(r.id, true, on: day(2026, 5, 2))
-        #expect(lib.records.first?.filePath == r.filePath)
+        #expect(lib.records.first?.stage == .paid)
         try lib.archive([r.id])
         paid = try #require(lib.records.first)
         #expect(paid.filePath.hasSuffix("OneDrive/Rechnungen/Archiv/2026-05/26-03-05 Musterlieferant ZF-2026-4711.pdf"))
@@ -196,9 +200,22 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         let reopened = Library(directory: tmp.appendingPathComponent("data"))
         #expect(reopened.settings.fileName == "{yy} {company} {invoice}")
         #expect(reopened.views == lib.views)
-        #expect(reopened.settings.paidFolder == "Archiv/{paid_yyyy}-{paid_mm}")
-        #expect(reopened.records.first?.status == .paid)
+        #expect(reopened.settings.archiveFolder == "Archiv/{paid_yyyy}-{paid_mm}")
+        #expect(reopened.records.first?.stage == .archived)
         #expect(reopened.records.first?.filePath == paid.filePath)
+    }
+
+    /// Settings from before the paid folder existed: their "paidFolder" was the archive and must stay it.
+    @Test func olderSettingsKeepTheirArchiveFolder() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        try Data(#"{"rootFolder":"/x","unpaidFolder":"Offen","paidFolder":"Archiv/{yyyy}","fileName":"{invoice}","username":"a@b.de"}"#.utf8)
+            .write(to: tmp.appendingPathComponent("settings.json"))
+        let s = Library(directory: tmp).settings
+        #expect(s.rootFolder == "/x" && s.unpaidFolder == "Offen" && s.username == "a@b.de")
+        #expect(s.archiveFolder == "Archiv/{yyyy}")
+        #expect(s.paidFolder == "01 Bezahlt")
+        #expect(s.imapHost == "secureimap.t-online.de")
     }
 
     @Test func nonInvoiceIsSkippedNotFiled() async throws {
@@ -334,16 +351,28 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         try fixture("agb.pdf").write(to: root.appendingPathComponent("2025-01/agb.pdf"))
 
         let ex = Extractor(useAppleIntelligence: false)
-        let s = try await lib.indexFolders([root], extractor: ex)
-        #expect(s.messages == 3)
-        #expect(s.filed == 2)
+        #expect(lib.unknownFiles(in: root).count == 3)
+        #expect(lib.suggestedStage(for: root.appendingPathComponent("00 Offen")) == .open)
+        #expect(lib.suggestedStage(for: root.appendingPathComponent("2025-01")) == .archived)
+        // The stage is the one the user picked, here "archived" for an old month folder.
+        let s = try await lib.indexFolders([root.appendingPathComponent("2025-01")], stage: .archived, extractor: ex)
+        #expect(s.messages == 2)
+        #expect(s.filed == 1)
         #expect(s.skipped == 1)
-        // Not moved or renamed; status from the folder it lies in.
-        #expect(lib.records.first { $0.filePath == open.standardizedFileURL.path }?.status == .unpaid)
-        #expect(lib.records.first { $0.filePath == paid.standardizedFileURL.path }?.status == .paid)
+        _ = try await lib.indexFolders([root.appendingPathComponent("00 Offen")], stage: .open, extractor: ex)
+        // Not moved or renamed.
+        #expect(lib.records.first { $0.filePath == open.standardizedFileURL.path }?.stage == .open)
+        #expect(lib.records.first { $0.filePath == paid.standardizedFileURL.path }?.stage == .archived)
         #expect(fm.fileExists(atPath: open.path) && fm.fileExists(atPath: paid.path))
-        // A second run adds nothing.
-        #expect(try await lib.indexFolders([root], extractor: ex).filed == 0)
+        // Correcting a field keeps the file where it is, under its own name.
+        let old = try #require(lib.records.first { $0.filePath == paid.standardizedFileURL.path })
+        var f = old.fields; f.total = 1200
+        try lib.update(old.id, fields: f, status: old.status, paidDate: old.paidDate)
+        let edited = try #require(lib.records.first { $0.id == old.id })
+        #expect(edited.filePath == paid.standardizedFileURL.path && edited.fields.total == 1200 && edited.paidDate == nil)
+        // Everything was read, including the file that is not an invoice; a second run adds nothing.
+        #expect(lib.unknownFiles(in: root).isEmpty)
+        #expect(try await lib.indexFolders([root], stage: .archived, extractor: ex).filed == 0)
         #expect(lib.records.count == 2)
     }
 }

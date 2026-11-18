@@ -115,6 +115,7 @@ public struct Extractor: Sendable {
         if f.invoiceNumber.isEmpty { r.append("Keine Rechnungsnummer gefunden") }
         if f.invoiceDate == nil { r.append("Kein Rechnungsdatum gefunden") }
         if f.seller.isEmpty { r.append("Kein Firmenname gefunden") }
+        if f.total == nil { r.append("Kein Betrag gefunden") }
         if let d = f.invoiceDate, d > Date().addingTimeInterval(86400 * 2) { r.append("Rechnungsdatum liegt in der Zukunft") }
         if let d = f.invoiceDate, d < Date().addingTimeInterval(-86400 * 365 * 3) { r.append("Rechnungsdatum ist älter als 3 Jahre") }
         return r

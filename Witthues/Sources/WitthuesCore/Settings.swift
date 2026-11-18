@@ -4,8 +4,12 @@ import Security
 public struct AppSettings: Codable, Equatable, Sendable {
     /// Main folder, usually inside the OneDrive folder. Templates below are relative to it.
     public var rootFolder = ""
+    /// Open invoices.
     public var unpaidFolder = "00 Offen"
-    public var paidFolder = "{yyyy}-{mm}"
+    /// Paid invoices waiting to be printed and archived.
+    public var paidFolder = "01 Bezahlt"
+    /// Archived invoices, by default one folder per invoice month.
+    public var archiveFolder = "{yyyy}-{mm}"
     public var fileName = "{yy}-{mm}-{dd} {company} {invoice}"
 
     public var imapHost = "secureimap.t-online.de"
@@ -22,10 +26,48 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init() {}
 
+    // "paidFolder" in older settings files was the archive folder; it keeps that key.
+    enum CodingKeys: String, CodingKey {
+        case rootFolder, unpaidFolder, paidFolder = "paidWaitingFolder", archiveFolder = "paidFolder", fileName
+        case imapHost, imapPort, useTLS, username, mailbox, importSince, checkOnLaunch, checkIntervalMinutes, useAppleIntelligence
+    }
+
+    /// Missing keys keep their defaults, so settings from older versions still load.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func get<T: Decodable>(_ key: CodingKeys, _ value: inout T) throws {
+            if let v = try c.decodeIfPresent(T.self, forKey: key) { value = v }
+        }
+        try get(.rootFolder, &rootFolder)
+        try get(.unpaidFolder, &unpaidFolder)
+        try get(.paidFolder, &paidFolder)
+        try get(.archiveFolder, &archiveFolder)
+        try get(.fileName, &fileName)
+        try get(.imapHost, &imapHost)
+        try get(.imapPort, &imapPort)
+        try get(.useTLS, &useTLS)
+        try get(.username, &username)
+        try get(.mailbox, &mailbox)
+        try get(.importSince, &importSince)
+        try get(.checkOnLaunch, &checkOnLaunch)
+        try get(.checkIntervalMinutes, &checkIntervalMinutes)
+        try get(.useAppleIntelligence, &useAppleIntelligence)
+    }
+
+    /// The folder template for a stage.
+    public func folderTemplate(_ stage: Stage) -> String {
+        switch stage {
+        case .open: return unpaidFolder
+        case .paid: return paidFolder
+        case .archived: return archiveFolder
+        }
+    }
+
     /// Replaces earlier variable names such as {customer} with {company} in all templates.
     public mutating func migrateTemplates() {
         unpaidFolder = PathTemplate.migrated(unpaidFolder)
         paidFolder = PathTemplate.migrated(paidFolder)
+        archiveFolder = PathTemplate.migrated(archiveFolder)
         fileName = PathTemplate.migrated(fileName)
     }
 

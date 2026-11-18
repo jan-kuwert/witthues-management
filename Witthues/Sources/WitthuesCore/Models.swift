@@ -42,6 +42,28 @@ public enum InvoiceStatus: String, Codable, Sendable {
     case unpaid, paid
 }
 
+/// Where an invoice is in its life: open, paid and waiting (to be printed and archived), or archived.
+/// Each stage has its own folder in the settings. Raw values are stored in saved filters.
+public enum Stage: String, Codable, CaseIterable, Identifiable, Sendable {
+    case open = "unpaid", paid, archived
+
+    public var id: Self { self }
+    public var label: String {
+        switch self {
+        case .open: return "Offen"
+        case .paid: return "Bezahlt"
+        case .archived: return "Archiviert"
+        }
+    }
+    public var symbol: String {
+        switch self {
+        case .open: return "tray.full"
+        case .paid: return "checkmark.circle"
+        case .archived: return "archivebox"
+        }
+    }
+}
+
 extension MailOrigin {
     /// Opens the mail in Apple Mail (message:// with the Message-ID); nil for invoices added by hand.
     public var mailURL: URL? {
@@ -88,8 +110,16 @@ public struct InvoiceRecord: Codable, Identifiable, Equatable, Sendable {
     public var fileMissing: Bool = false
     /// A file name the user typed instead of the settings' template (without extension); nil follows the template.
     public var customName: String?
+    /// True once a paid invoice was moved to the archive. nil only in records from before this existed;
+    /// the library fills it in when loading.
+    public var archived: Bool?
+    /// When the invoice was printed (or the user said it was), to see which ones are filed on paper.
+    public var printedAt: Date?
+    /// True for a file read where it already lay: it keeps its folder and name until its stage changes.
+    public var inPlace: Bool?
 
     public var needsReview: Bool { !reviewReasons.isEmpty }
+    public var stage: Stage { status == .unpaid ? .open : archived == true ? .archived : .paid }
     public var fileURL: URL { URL(fileURLWithPath: filePath) }
 
     public init(id: UUID = UUID(), fields: InvoiceFields, source: ExtractionSource, reviewReasons: [String],
@@ -273,7 +303,7 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
         guard isComplete else { return opText + " …" }
         switch field.kind {
         case .flag: return opText
-        case .status: return opText + " " + (value == InvoiceStatus.paid.rawValue ? "Bezahlt" : "Offen")
+        case .status: return opText + " " + (Stage(rawValue: value)?.label ?? value)
         case .source: return opText + " " + (ExtractionSource(rawValue: value)?.label ?? value)
         case .text: return "\(opText) „\(trimmed)“"
         case .date where op == .before || op == .after:
@@ -289,7 +319,7 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
         case .flag:
             let flagged = r.needsReview || r.fileMissing
             return op == .equals ? flagged : !flagged
-        case .status: return (r.status.rawValue == v) != op.isNegative
+        case .status: return (r.stage.rawValue == v) != op.isNegative
         case .source: return (r.source.rawValue == v) != op.isNegative
         case .text:
             let t = text(of: r, folder: folder)

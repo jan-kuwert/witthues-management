@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import WitthuesCore
 import Observation
@@ -24,6 +25,10 @@ final class AppModel {
     private var timer: Task<Void, Never>?
 
     init() {
+        // Files deleted or moved in Finder leave the lists when the user comes back to the app.
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.library.refreshFiles() }
+        }
         restartTimer()
         if library.settings.checkOnLaunch { checkNow() }
     }
@@ -76,17 +81,24 @@ final class AppModel {
 
     /// Starts reading mails from a date range in the chosen folders again. It runs on even when the window
     /// that started it closes; progress and the result are on the model.
-    func startReadingPast(mailboxes: [String], from: Date, to: Date) {
+    func startReadingPast(mailboxes: [String], from: Date, to: Date, stage: Stage, paidDate: Date?) {
         runImport(notice: ("ältere Rechnung", "ältere Rechnungen"), text: \.pastText) { [library] progress in
             try await MailChecker.readPast(library: library, password: Keychain.password(for: library.settings.username) ?? "",
-                                           mailboxes: mailboxes, from: from, to: to, progress: progress)
+                                           mailboxes: mailboxes, from: from, to: to, stage: stage, paidDate: paidDate, progress: progress)
         }
     }
 
-    /// Starts adding the invoice PDFs already lying in these folders, without moving them, for the statistics.
-    func startReadingFolders(_ folders: [URL]) {
+    /// Starts adding the invoice PDFs already lying in these folders with the chosen stage, without moving them.
+    func startReadingFolders(_ folders: [URL], stage: Stage, paidDate: Date?) {
         runImport(notice: ("vorhandene Rechnung", "vorhandene Rechnungen"), text: \.filesText) { [library, extractor] progress in
-            try await library.indexFolders(folders, extractor: extractor, progress: progress)
+            try await library.indexFolders(folders, stage: stage, paidDate: paidDate, extractor: extractor, progress: progress)
+        }
+    }
+
+    /// Reads these files (already in place) with the chosen stage.
+    func startReadingFiles(_ files: [URL], stage: Stage, paidDate: Date?) {
+        runImport(notice: ("vorhandene Rechnung", "vorhandene Rechnungen"), text: \.filesText) { [library, extractor] progress in
+            try await library.indexFiles(files, stage: stage, paidDate: paidDate, extractor: extractor, progress: progress)
         }
     }
 
@@ -115,28 +127,16 @@ final class AppModel {
 
     func cancelReadingPast() { pastTask?.cancel() }
 
-    /// Files PDFs or e-invoice XMLs dropped on the window, the same way as mail attachments.
-    func importFiles(_ urls: [URL]) async {
-        for url in urls where ["pdf", "xml"].contains(url.pathExtension.lowercased()) {
-            do {
-                let data = try Data(contentsOf: url)
-                _ = try await library.ingest(data: data, fileName: url.lastPathComponent,
-                                             origin: MailOrigin(subject: "Von Hand hinzugefügt", attachmentName: url.lastPathComponent),
-                                             extractor: extractor)
-            } catch {
-                lastError = "\(url.lastPathComponent): \(error.localizedDescription)"
-            }
-        }
-    }
-
-    /// Files invoices that are already paid; returns a short German summary for the user.
-    func importPaid(_ files: [(Data, String)], paidOn date: Date) async -> String {
+    /// Files invoices the user added by hand (dropped, picked, photographed or scanned) with the stage they chose;
+    /// returns a short German summary.
+    @discardableResult
+    func importFiles(_ files: [(Data, String)], stage: Stage, paidOn date: Date?) async -> String {
         var filed = 0, duplicates = 0
         var failed: [String] = []
         for (data, name) in files {
             do {
-                if try await library.ingestPaid(data: data, fileName: name, paidOn: date,
-                                                origin: MailOrigin(subject: "Bezahlt, von Hand hinzugefügt", attachmentName: name),
+                if try await library.ingestFile(data: data, fileName: name, stage: stage, paidOn: date,
+                                                origin: MailOrigin(subject: "Von Hand hinzugefügt", attachmentName: name),
                                                 extractor: extractor) != nil {
                     filed += 1
                 } else {
@@ -148,13 +148,23 @@ final class AppModel {
             }
         }
         var parts: [String] = []
-        if filed > 0 { parts.append(filed == 1 ? "1 Rechnung als bezahlt abgelegt" : "\(filed) Rechnungen als bezahlt abgelegt") }
+        if filed > 0 { parts.append((filed == 1 ? "1 Rechnung" : "\(filed) Rechnungen") + " unter „\(stage.label)“ abgelegt") }
         if duplicates > 0 { parts.append(duplicates == 1 ? "1 war schon vorhanden" : "\(duplicates) waren schon vorhanden") }
         if !failed.isEmpty { parts.append("nicht lesbar: " + failed.joined(separator: ", ")) }
         return parts.isEmpty ? "Nichts hinzugefügt" : parts.joined(separator: " · ")
     }
 
-    var unpaidCount: Int { library.records.filter { $0.status == .unpaid }.count }
+    var unpaidCount: Int { library.liveRecords.filter { $0.status == .unpaid }.count }
+
+    /// Asks for the stage, then files the dropped or picked files (folders included) by the templates.
+    func importRequest(_ urls: [URL]) -> StageRequest? {
+        let files = AddInvoiceSheet.files(in: urls)
+        guard !files.isEmpty else { return nil }
+        return StageRequest(title: files.count == 1 ? "1 Datei hinzufügen" : "\(files.count) Dateien hinzufügen",
+                            detail: files.map(\.1).joined(separator: ", "), inPlace: false, suggested: .open) { [weak self] stage, date in
+            Task { await self?.importFiles(files, stage: stage, paidOn: date) }
+        }
+    }
 
     // MARK: - Start at login
 

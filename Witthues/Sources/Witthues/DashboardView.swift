@@ -101,7 +101,7 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 if editing { editBar }
-                if model.library.records.isEmpty {
+                if model.library.liveRecords.isEmpty {
                     ContentUnavailableView("Noch keine Rechnungen", systemImage: "chart.bar",
                                            description: Text("Diagramme erscheinen, sobald Rechnungen abgelegt sind."))
                         .frame(maxWidth: .infinity, minHeight: 400)
@@ -317,12 +317,12 @@ struct DashboardView: View {
         case .paymentTime: card("Zahlungsdauer", subtitle: "Tage vom Rechnungsdatum bis zur Zahlung") { paymentTime }
         case .unpaid:
             card("Warten auf Zahlung", subtitle: "Älteste offene Rechnungen zuerst") {
-                invoiceList(model.library.records.filter { $0.status == .unpaid }.sorted { date($0) < date($1) },
+                invoiceList(model.library.liveRecords.filter { $0.status == .unpaid }.sorted { date($0) < date($1) },
                             empty: "Alles bezahlt.") { Text(daysOpen($0)) }
             }
         case .review:
             card("Zu prüfen", subtitle: "Felder, die jemand ansehen sollte") {
-                invoiceList(model.library.records.filter(\.needsReview).sorted { date($0) > date($1) },
+                invoiceList(model.library.liveRecords.filter(\.needsReview).sorted { date($0) > date($1) },
                             empty: "Nichts zu prüfen.") { Text($0.reviewReasons.first ?? "").lineLimit(1) }
             }
         }
@@ -333,10 +333,12 @@ struct DashboardView: View {
     private func currencyOf(_ r: InvoiceRecord) -> String { r.fields.currency.isEmpty ? "EUR" : r.fields.currency.uppercased() }
     private func amount(_ r: InvoiceRecord) -> Double { r.fields.total.map { NSDecimalNumber(decimal: $0).doubleValue } ?? 0 }
     private func date(_ r: InvoiceRecord) -> Date { r.fields.invoiceDate ?? r.importedAt }
+    /// Invoices that count in totals and charts: not deleted, and checked when the app was unsure about them.
+    private var counted: [InvoiceRecord] { model.library.liveRecords.filter { !$0.needsReview } }
 
     /// The most common currency; amounts in other currencies are left out of sums rather than mixed.
     private var currency: String {
-        let counts = Dictionary(grouping: model.library.records.filter { $0.fields.total != nil }, by: currencyOf).mapValues(\.count)
+        let counts = Dictionary(grouping: counted.filter { $0.fields.total != nil }, by: currencyOf).mapValues(\.count)
         return counts.max { $0.value < $1.value }?.key ?? "EUR"
     }
 
@@ -353,19 +355,19 @@ struct DashboardView: View {
     /// From the month of the oldest invoice to the end of this month.
     private var allSpan: DateInterval? {
         let cal = Calendar.current
-        guard let first = model.library.records.map(date).min() else { return nil }
-        let end = cal.dateInterval(of: .month, for: max(Date(), model.library.records.map(date).max()!))!.end
+        guard let first = counted.map(date).min() else { return nil }
+        let end = cal.dateInterval(of: .month, for: max(Date(), counted.map(date).max()!))!.end
         return DateInterval(start: cal.dateInterval(of: .month, for: first)!.start, end: end)
     }
 
     private func contains(_ d: Date) -> Bool { range.map { d >= $0.start && d < $0.end } ?? true }
 
-    private var inPeriod: [InvoiceRecord] { model.library.records.filter { contains(date($0)) } }
+    private var inPeriod: [InvoiceRecord] { counted.filter { contains(date($0)) } }
     private var countable: [InvoiceRecord] { inPeriod.filter { currencyOf($0) == currency } }
     private var otherCurrencyCount: Int { inPeriod.filter { $0.fields.total != nil && currencyOf($0) != currency }.count }
     /// Paid in the span, by payment date.
     private var paidInPeriod: [InvoiceRecord] {
-        model.library.records.filter { $0.status == .paid && currencyOf($0) == currency && contains($0.paidDate ?? date($0)) }
+        counted.filter { $0.status == .paid && currencyOf($0) == currency && contains($0.paidDate ?? date($0)) }
     }
 
     private func sum(_ list: [InvoiceRecord]) -> Double { list.reduce(0) { $0 + amount($1) } }
@@ -407,7 +409,7 @@ struct DashboardView: View {
     // MARK: - Widgets
 
     private var kpis: some View {
-        let unpaid = model.library.records.filter { $0.status == .unpaid }
+        let unpaid = counted.filter { $0.status == .unpaid }
         let unpaidCountable = unpaid.filter { currencyOf($0) == currency }
         return HStack(spacing: 16) {
             kpi("Offen", value: money(sum(unpaidCountable)), detail: "\(plural(unpaid.count)) offen",
@@ -415,8 +417,8 @@ struct DashboardView: View {
             kpi("Bezahlt", value: money(sum(countable.filter { $0.status == .paid })),
                 detail: plural(inPeriod.filter { $0.status == .paid }.count), icon: "checkmark.circle", tint: .green, opens: .paid)
             kpi("Gesamt", value: money(sum(countable)), detail: plural(inPeriod.count), icon: "sum", tint: .blue, opens: .all)
-            kpi("Zu prüfen", value: "\(model.library.records.filter(\.needsReview).count)",
-                detail: "\(model.library.skipped.count) übersprungen", icon: "exclamationmark.bubble", tint: .purple, opens: .review)
+            kpi("Zu prüfen", value: "\(model.library.liveRecords.filter(\.needsReview).count)",
+                detail: "zählen erst nach Prüfung mit", icon: "exclamationmark.bubble", tint: .purple, opens: .review)
         }
     }
 

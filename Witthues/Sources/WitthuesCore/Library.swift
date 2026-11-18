@@ -12,6 +12,9 @@ public final class Library {
     /// Saved archive views, kept in views.json.
     public var views: [SavedView] { didSet { if views != oldValue { saveViews() } } }
     private var cursors: [String: MailboxCursor] = [:]
+    /// Files in the folders that were read and are not invoices (or copies of known ones), so they don't
+    /// show up as unread again.
+    private var ignoredFiles: Set<String> = []
 
     public let directory: URL
 
@@ -19,6 +22,7 @@ public final class Library {
         var records: [InvoiceRecord]
         var skipped: [SkippedAttachment]
         var cursors: [String: MailboxCursor]
+        var ignoredFiles: Set<String>?
     }
 
     /// `WITTHUES_HOME` overrides the data folder, for tests and demos.
@@ -40,7 +44,17 @@ public final class Library {
             records = stored.records
             skipped = stored.skipped
             cursors = stored.cursors
+            ignoredFiles = stored.ignoredFiles ?? []
         }
+        // Before stages existed, a paid invoice counted as archived once its file had left the unpaid folder.
+        var migrated = false
+        for i in records.indices where records[i].archived == nil {
+            let r = records[i]
+            let unpaid = organizer.folder(for: r.fields, stage: .open, paidDate: nil).standardizedFileURL.path
+            records[i].archived = r.status == .paid && r.fileURL.deletingLastPathComponent().standardizedFileURL.path != unpaid
+            migrated = true
+        }
+        if migrated { save() }
         refreshFiles()
     }
 
@@ -54,9 +68,9 @@ public final class Library {
         case duplicate
     }
 
-    /// Files one mail's attachments: invoices go to the unpaid folder, other PDFs to the skipped list,
-    /// and other file types are ignored.
-    public func ingest(mail: ParsedMail, extractor: Extractor) async throws -> [Outcome] {
+    /// Files one mail's attachments: invoices go to the folder of the stage (new mail: the unpaid folder),
+    /// other PDFs to the skipped list, and other file types are ignored.
+    public func ingest(mail: ParsedMail, extractor: Extractor, stage: Stage = .open, paidDate: Date? = nil) async throws -> [Outcome] {
         let body = mail.body
         let origin = MailOrigin(subject: mail.subject, from: mail.from, date: mail.date, messageID: mail.messageID,
                                 body: body.isEmpty ? nil : body)
@@ -69,13 +83,15 @@ public final class Library {
             o.attachmentName = pdf.fileName
             // A separate XRechnung in the same mail is the authoritative data for a single PDF.
             let companionXML = pdfs.count == 1 ? xmls.first : nil
-            outcomes.append(try await ingest(data: pdf.data, fileName: pdf.fileName, origin: o, extractor: extractor, companionXML: companionXML))
+            outcomes.append(try await ingest(data: pdf.data, fileName: pdf.fileName, origin: o, extractor: extractor, companionXML: companionXML,
+                                             stage: stage, paidDate: paidDate))
         }
         if pdfs.isEmpty {
             for (xml, _) in xmls {
                 var o = origin
                 o.attachmentName = xml.fileName
-                outcomes.append(try await ingest(data: xml.data, fileName: xml.fileName, origin: o, extractor: extractor))
+                outcomes.append(try await ingest(data: xml.data, fileName: xml.fileName, origin: o, extractor: extractor,
+                                                 stage: stage, paidDate: paidDate))
             }
         }
         return outcomes
@@ -83,10 +99,12 @@ public final class Library {
 
     public func ingest(data: Data, fileName: String, origin: MailOrigin, extractor: Extractor,
                        companionXML: (MailAttachment, InvoiceFields)? = nil, force: Bool = false,
-                       sourceHash: String? = nil) async throws -> Outcome {
+                       sourceHash: String? = nil, stage: Stage = .open, paidDate: Date? = nil) async throws -> Outcome {
         // A photo turned into a PDF is recognised by the photo, since each conversion gives a new PDF.
         let hash = sourceHash ?? Self.sha256(data)
-        if records.contains(where: { $0.sha256 == hash }) { return .duplicate }
+        if records.contains(where: { $0.sha256 == hash && !$0.fileMissing }) { return .duplicate }
+        // The same invoice again after it was deleted: forget the deleted entry and file it anew.
+        records.removeAll { $0.sha256 == hash && $0.fileMissing }
         if !force, skipped.contains(where: { $0.storedPath.hasSuffix(hash + "." + Self.ext(fileName)) }) { return .duplicate }
 
         var x = await extractor.extract(data: data, fileName: fileName, subject: origin.subject, sender: origin.from)
@@ -103,12 +121,20 @@ public final class Library {
             return .skipped(s)
         }
         guard settings.isFolderConfigured else { throw IMAPError(message: "Bitte zuerst den Hauptordner in den Einstellungen wählen") }
-        let url = try organizer.save(data, ext: Self.ext(fileName), fields: x.fields)
+        let paid = stage == .open ? nil : paidDate
+        // Without an invoice date the archive folder would be "YYYY-MM"; a known payment date stands in, to be checked.
+        if x.fields.invoiceDate == nil, let paid {
+            x.fields.invoiceDate = Calendar.current.startOfDay(for: paid)
+            x.reviewReasons = x.reviewReasons.filter { $0 != "Kein Rechnungsdatum gefunden" } + ["Kein Rechnungsdatum gefunden, Zahlungsdatum verwendet"]
+        }
+        let url = try organizer.save(data, ext: Self.ext(fileName), fields: x.fields, stage: stage, paidDate: paid)
         if let (xml, _) = companionXML {
             try? xml.data.write(to: url.deletingPathExtension().appendingPathExtension("xml"), options: .withoutOverwriting)
         }
-        let record = InvoiceRecord(fields: x.fields, source: x.source, reviewReasons: x.reviewReasons,
+        var record = InvoiceRecord(fields: x.fields, source: x.source, reviewReasons: x.reviewReasons,
+                                   status: stage == .open ? .unpaid : .paid, paidDate: paid,
                                    filePath: url.path, origin: origin, sha256: hash)
+        record.archived = stage == .archived
         records.insert(record, at: 0)
         save()
         return .filed(record)
@@ -118,35 +144,73 @@ public final class Library {
 
     public enum ExistingFile: Sendable, Equatable { case added, known, notInvoice }
 
-    /// Adds an invoice PDF that already lies in a folder, without moving or renaming it, so invoices filed
-    /// before the app count in the statistics. Files inside the unpaid folder count as open, all others as paid
-    /// (without a payment date, which the file does not tell).
-    public func indexExisting(_ url: URL, extractor: Extractor) async throws -> ExistingFile {
+    /// Adds an invoice PDF that already lies in a folder with the stage the user chose, without moving or
+    /// renaming it, so invoices filed before the app count in the lists and statistics. The fields are read
+    /// like a mail attachment; what the app is unsure about is marked for checking.
+    public func indexExisting(_ url: URL, stage: Stage, paidDate: Date? = nil, extractor: Extractor) async throws -> ExistingFile {
         let path = url.standardizedFileURL.path
         if records.contains(where: { URL(fileURLWithPath: $0.filePath).standardizedFileURL.path == path }) { return .known }
         let data = try Data(contentsOf: url)
         let hash = Self.sha256(data)
-        if records.contains(where: { $0.sha256 == hash }) { return .known }
+        // A file moved in Finder comes back to its record instead of counting as deleted.
+        if let i = records.firstIndex(where: { $0.sha256 == hash && $0.fileMissing }) {
+            records[i].filePath = path
+            records[i].fileMissing = false
+            save()
+            return .known
+        }
+        if records.contains(where: { $0.sha256 == hash }) {
+            ignoredFiles.insert(path)
+            save()
+            return .known
+        }
         let x = await extractor.extract(data: data, fileName: url.lastPathComponent, subject: "", sender: "")
-        guard x.isInvoice else { return .notInvoice }
-        let unpaid = organizer.folder(for: x.fields, status: .unpaid, paidDate: nil).standardizedFileURL.path
-        let record = InvoiceRecord(fields: x.fields, source: x.source, reviewReasons: x.reviewReasons,
-                                   status: path.hasPrefix(unpaid + "/") ? .unpaid : .paid, filePath: path,
+        guard x.isInvoice else {
+            ignoredFiles.insert(path)
+            save()
+            return .notInvoice
+        }
+        var record = InvoiceRecord(fields: x.fields, source: x.source, reviewReasons: x.reviewReasons,
+                                   status: stage == .open ? .unpaid : .paid, paidDate: stage == .open ? nil : paidDate, filePath: path,
                                    origin: MailOrigin(subject: "Aus vorhandenem Ordner", attachmentName: url.lastPathComponent),
                                    sha256: hash)
+        record.archived = stage == .archived
+        record.inPlace = true
+        record.customName = url.deletingPathExtension().lastPathComponent
         records.insert(record, at: 0)
         save()
         return .added
     }
 
+    /// The stage files in a folder most likely have: the unpaid or paid folder, otherwise archived.
+    public func suggestedStage(for folder: URL) -> Stage {
+        let path = folder.standardizedFileURL.path
+        for stage in [Stage.open, .paid] {
+            let f = organizer.folder(for: InvoiceFields(), stage: stage, paidDate: nil).standardizedFileURL.path
+            if f != organizer.rootURL.standardizedFileURL.path, path == f || path.hasPrefix(f + "/") { return stage }
+        }
+        return .archived
+    }
+
+    /// PDFs in a folder and its subfolders that were never read.
+    public func unknownFiles(in folder: URL) -> [URL] {
+        let known = Set(records.map { URL(fileURLWithPath: $0.filePath).standardizedFileURL.path }).union(ignoredFiles)
+        return Self.pdfs(in: [folder]).filter { !known.contains($0.path) }
+    }
+
     /// Reads every PDF in the folders and their subfolders with `indexExisting`. Stops between files when the
     /// task is cancelled; what is added stays added.
-    public func indexFolders(_ folders: [URL], extractor: Extractor,
+    public func indexFolders(_ folders: [URL], stage: Stage, paidDate: Date? = nil, extractor: Extractor,
                              progress: @MainActor (MailProgress) -> Void = { _ in }) async throws -> CheckSummary {
+        try await indexFiles(Self.pdfs(in: folders), stage: stage, paidDate: paidDate, extractor: extractor, progress: progress)
+    }
+
+    /// Reads these PDFs with `indexExisting`.
+    public func indexFiles(_ files: [URL], stage: Stage, paidDate: Date? = nil, extractor: Extractor,
+                           progress: @MainActor (MailProgress) -> Void = { _ in }) async throws -> CheckSummary {
         var p = MailProgress(step: "Dateien werden gesucht …")
         p.unit = "Datei"
         progress(p)
-        let files = Self.pdfs(in: folders)
         p.total = files.count
         for (n, url) in files.enumerated() {
             try Task.checkCancellation()
@@ -156,7 +220,7 @@ public final class Library {
             progress(p)
             p.summary.messages += 1
             do {
-                switch try await indexExisting(url, extractor: extractor) {
+                switch try await indexExisting(url, stage: stage, paidDate: paidDate, extractor: extractor) {
                 case .added: p.summary.filed += 1
                 case .known: p.summary.duplicates += 1
                 case .notInvoice: p.summary.skipped += 1
@@ -170,7 +234,7 @@ public final class Library {
     }
 
     /// PDFs in the folders and all subfolders, each once, sorted by path.
-    nonisolated static func pdfs(in folders: [URL]) -> [URL] {
+    public nonisolated static func pdfs(in folders: [URL]) -> [URL] {
         var found = Set<URL>()
         for folder in folders {
             guard let e = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
@@ -183,9 +247,10 @@ public final class Library {
     /// File types a paid invoice can be imported from: PDFs, e-invoice XML and photos or scans.
     public static let importableExtensions: Set<String> = ["pdf", "xml", "jpg", "jpeg", "png", "heic", "heif", "tif", "tiff"]
 
-    /// Files an invoice the user says is already paid, straight into the archive folder.
+    /// Files an invoice the user added by hand (file, photo or scan) with the stage they chose.
     /// Photos and scans are saved as a one-page PDF. Returns nil when the same file was imported before.
-    public func ingestPaid(data: Data, fileName: String, paidOn date: Date, origin: MailOrigin, extractor: Extractor) async throws -> InvoiceRecord? {
+    public func ingestFile(data: Data, fileName: String, stage: Stage, paidOn date: Date?, origin: MailOrigin,
+                           extractor: Extractor) async throws -> InvoiceRecord? {
         let hash = Self.sha256(data)
         var data = data
         var name = fileName
@@ -196,17 +261,9 @@ public final class Library {
         }
         // The user says it is an invoice, so it is filed even if the checks would skip it.
         guard case .filed(let record) = try await ingest(data: data, fileName: name, origin: origin, extractor: extractor, force: true,
-                                                     sourceHash: hash)
+                                                     sourceHash: hash, stage: stage, paidDate: date)
         else { return nil }
-        // Without an invoice date the archive folder would be "YYYY-MM"; use the payment date and ask for a check.
-        if record.fields.invoiceDate == nil, let i = records.firstIndex(where: { $0.id == record.id }) {
-            records[i].fields.invoiceDate = Calendar.current.startOfDay(for: date)
-            records[i].reviewReasons.append("Kein Rechnungsdatum gefunden, Zahlungsdatum verwendet")
-        }
-        // Added by hand as paid, typically a receipt already on paper: it goes straight to the archive.
-        try setPaid(record.id, true, on: date)
-        try archive([record.id])
-        return records.first { $0.id == record.id }
+        return record
     }
 
     /// A photo as a one-page PDF, A4 wide, upright, at most 3000 pixels on the long side.
@@ -232,10 +289,11 @@ public final class Library {
     }
 
     /// Files a skipped attachment as an invoice after all.
-    public func importSkipped(_ id: SkippedAttachment.ID, extractor: Extractor) async throws {
+    public func importSkipped(_ id: SkippedAttachment.ID, stage: Stage = .open, paidDate: Date? = nil, extractor: Extractor) async throws {
         guard let s = skipped.first(where: { $0.id == id }) else { return }
         let data = try Data(contentsOf: URL(fileURLWithPath: s.storedPath))
-        let outcome = try await ingest(data: data, fileName: s.origin.attachmentName, origin: s.origin, extractor: extractor, force: true)
+        let outcome = try await ingest(data: data, fileName: s.origin.attachmentName, origin: s.origin, extractor: extractor, force: true,
+                                       stage: stage, paidDate: paidDate)
         if case .filed = outcome {
             skipped.removeAll { $0.id == id }
             try? FileManager.default.removeItem(atPath: s.storedPath)
@@ -259,17 +317,22 @@ public final class Library {
     }
 
     /// Saves fields and status with the file name (without extension) the user typed. nil, or the name the
-    /// template would give, follows the template. A paid invoice stays in the unpaid folder until it is archived
-    /// (`archive`, or it already was); open invoices always go to the unpaid folder.
+    /// template would give, follows the template. The file goes to the folder of its stage: open invoices to the
+    /// unpaid folder, paid ones to the paid folder until they are archived (`archive`, or they already were).
     public func update(_ id: InvoiceRecord.ID, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, name: String?,
                        archive: Bool = false) throws {
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         var r = records[i]
-        let newPaid = status == .paid ? (paidDate ?? r.paidDate ?? Date()) : nil
+        // A paid invoice without a known payment date keeps having none.
+        let newPaid = status == .paid ? (paidDate ?? r.paidDate ?? (r.status == .paid ? nil : Date())) : nil
         let o = organizer
         let cleanName = name.map(FileOrganizer.cleanName).flatMap { $0.isEmpty || $0 == o.baseName(for: fields, paidDate: newPaid) ? nil : $0 }
-        let inArchive = status == .paid && (archive || isArchived(r))
-        let url = try o.place(r.fileURL, fields: fields, status: inArchive ? .paid : .unpaid, paidDate: newPaid, name: cleanName)
+        let inArchive = status == .paid && (archive || r.archived == true)
+        let stage: Stage = status == .unpaid ? .open : inArchive ? .archived : .paid
+        // Files read in place stay in their folder while only fields or the name change.
+        let keep = r.inPlace == true && stage == r.stage
+        let url = try o.place(r.fileURL, fields: fields, stage: stage, paidDate: newPaid, name: cleanName, keepFolder: keep)
+        r.inPlace = keep ? true : nil
         if r.fields != fields {
             r.source = .manual
             r.reviewReasons = Extractor.check(fields)
@@ -280,34 +343,59 @@ public final class Library {
         r.filePath = url.path
         r.fileMissing = false
         r.customName = cleanName
+        r.archived = inArchive
         records[i] = r
         save()
     }
 
-    /// Marks an invoice paid or open. Paying does not move the file; `archive` does that, when the user says so.
+    /// Marks an invoice paid (it moves to the paid folder) or open. Only `archive` moves it on into the archive.
     public func setPaid(_ id: InvoiceRecord.ID, _ paid: Bool, on date: Date = Date()) throws {
         guard let r = records.first(where: { $0.id == id }) else { return }
         try update(id, fields: r.fields, status: paid ? .paid : .unpaid, paidDate: paid ? date : nil)
     }
 
-    /// A paid invoice whose file has left the unpaid folder, normally into the archive folder.
-    public func isArchived(_ r: InvoiceRecord) -> Bool {
-        guard r.status == .paid else { return false }
-        let unpaid = organizer.folder(for: r.fields, status: .unpaid, paidDate: nil).standardizedFileURL.path
-        return r.fileURL.deletingLastPathComponent().standardizedFileURL.path != unpaid
-    }
+    public func isArchived(_ r: InvoiceRecord) -> Bool { r.stage == .archived }
 
     /// Moves paid invoices into their archive folder. Open and already archived ones are left alone.
     public func archive(_ ids: [InvoiceRecord.ID]) throws {
         for id in ids {
-            guard let r = records.first(where: { $0.id == id }), r.status == .paid, !isArchived(r) else { continue }
+            guard let r = records.first(where: { $0.id == id }), r.stage == .paid else { continue }
             try update(id, fields: r.fields, status: .paid, paidDate: r.paidDate, name: r.customName, archive: true)
         }
+    }
+
+    /// Marks invoices as printed (on paper) or not.
+    public func setPrinted(_ ids: [InvoiceRecord.ID], _ printed: Bool) {
+        for i in records.indices where ids.contains(records[i].id) {
+            records[i].printedAt = printed ? (records[i].printedAt ?? Date()) : nil
+        }
+        save()
     }
 
     public func markReviewed(_ id: InvoiceRecord.ID) {
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         records[i].reviewReasons = []
+        save()
+    }
+
+    /// Invoices whose file still exists. Deleted ones (in the app or in Finder) are only in `deleted`.
+    public var liveRecords: [InvoiceRecord] { records.filter { !$0.fileMissing } }
+    public var deleted: [InvoiceRecord] { records.filter(\.fileMissing) }
+
+    /// Moves the invoices' files to the macOS trash; the invoices go to the deleted list.
+    public func trash(_ ids: [InvoiceRecord.ID]) throws {
+        for i in records.indices where ids.contains(records[i].id) {
+            if FileManager.default.fileExists(atPath: records[i].filePath) {
+                try FileManager.default.trashItem(at: records[i].fileURL, resultingItemURL: nil)
+            }
+            records[i].fileMissing = true
+        }
+        save()
+    }
+
+    /// Forgets every deleted invoice.
+    public func clearDeleted() {
+        records.removeAll(where: \.fileMissing)
         save()
     }
 
@@ -344,7 +432,7 @@ public final class Library {
     private func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(Stored(records: records, skipped: skipped, cursors: cursors)) {
+        if let data = try? encoder.encode(Stored(records: records, skipped: skipped, cursors: cursors, ignoredFiles: ignoredFiles)) {
             try? data.write(to: directory.appendingPathComponent("library.json"), options: .atomic)
         }
     }

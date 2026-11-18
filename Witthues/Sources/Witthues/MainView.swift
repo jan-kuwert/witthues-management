@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarItem: Hashable {
-    case dashboard, unpaid, paid, review, all, skipped
+    case dashboard, unpaid, paid, archived, review, all, skipped, deleted
     /// A folder in the archive table; nil is every file.
     case archive(String?)
     /// A saved archive view.
@@ -26,6 +26,8 @@ struct MainView: View {
     /// Shown when a folder from outside the main folder is dropped on the sidebar.
     @State private var dropProblem: String?
     @State private var importingPaid = false
+    /// Files dropped on the window or the sidebar, waiting for the stage.
+    @State private var stageRequest: StageRequest?
 
     var body: some View {
         Group {
@@ -41,7 +43,7 @@ struct MainView: View {
                 NavigationSplitView {
                     sidebarList
                 } detail: {
-                    ArchiveView(start: start, viewID: viewID, open: openInvoice, showView: { sidebar = .view($0) },
+                    ArchiveView(start: start, viewID: viewID, showView: { sidebar = .view($0) },
                                 openFolder: { sidebar = .archive($0) })
                         .id(sidebar)
                 }
@@ -54,9 +56,9 @@ struct MainView: View {
                 Button {
                     importingPaid = true
                 } label: {
-                    Label("Bezahlte Rechnung hinzufügen", systemImage: "doc.badge.plus")
+                    Label("Rechnung hinzufügen", systemImage: "doc.badge.plus")
                 }
-                .help("Bezahlte Rechnung aus Fotos, per iPhone-Scan oder aus einer Datei hinzufügen (⇧⌘N)")
+                .help("Rechnung aus Fotos, per iPhone-Scan oder aus Dateien und Ordnern hinzufügen (⇧⌘N)")
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button {
                     model.checkNow()
@@ -80,7 +82,7 @@ struct MainView: View {
                     else if let data = try? await p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data,
                             let url = URL(dataRepresentation: data, relativeTo: nil) { urls.append(url) }
                 }
-                await model.importFiles(urls)
+                stageRequest = model.importRequest(urls)
             }
             return true
         }
@@ -92,7 +94,8 @@ struct MainView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 20))
             }
         }
-        .sheet(isPresented: $importingPaid) { PaidImportSheet() }
+        .sheet(isPresented: $importingPaid) { AddInvoiceSheet() }
+        .stagePrompt($stageRequest)
         .sheet(isPresented: Binding(get: { model.showingPastMail }, set: { model.showingPastMail = $0 })) { PastMailSheet() }
         .sheet(item: $renaming) { v in
             ViewEditor(title: v.isFolder == true ? "Ordner bearbeiten" : "Ansicht bearbeiten", name: v.name, icon: v.symbol) { name, icon in
@@ -122,13 +125,16 @@ struct MainView: View {
                 Label("Übersicht", systemImage: "chart.bar.xaxis").tag(SidebarItem.dashboard)
             }
             Section("Rechnungen") {
-                row(.unpaid, "Offen", "tray.full", model.library.records.filter { $0.status == .unpaid }.count)
-                row(.paid, "Bezahlt", "archivebox", model.library.records.filter { $0.status == .paid }.count)
-                row(.review, "Zu prüfen", "exclamationmark.bubble", model.library.records.filter(\.needsReview).count)
-                row(.all, "Alle", "doc.on.doc", model.library.records.count)
+                let live = model.library.liveRecords
+                row(.unpaid, "Offen", Stage.open.symbol, live.filter { $0.stage == .open }.count)
+                row(.paid, "Bezahlt", Stage.paid.symbol, live.filter { $0.stage == .paid }.count)
+                row(.archived, "Archiviert", Stage.archived.symbol, live.filter { $0.stage == .archived }.count)
+                row(.review, "Zu prüfen", "exclamationmark.bubble", live.filter(\.needsReview).count)
+                row(.all, "Alle", "doc.on.doc", live.count)
+                row(.deleted, "Gelöscht", "trash", model.library.deleted.count)
             }
             Section("Archiv") {
-                row(.archive(nil), "Alle Dateien", "tablecells", model.library.records.count)
+                row(.archive(nil), "Alle Dateien", "tablecells", model.library.liveRecords.count)
                 if !model.library.settings.rootFolder.isEmpty {
                     Label(ArchiveFolders.rootName(model.library), systemImage: "folder.fill")
                         .tag(SidebarItem.archive(""))
@@ -177,7 +183,7 @@ struct MainView: View {
                 .help("Ältere Mails oder vorhandene Rechnungsordner einlesen, etwa für die Statistik (⇧⌘R)")
             }
         }
-        .navigationSplitViewColumnWidth(min: 190, ideal: 210)
+        .navigationSplitViewColumnWidth(min: 210, ideal: 230)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { drag.area = $0 }
         // Folders dropped here are added under "Archiv"; other files are imported as invoices.
         .dropDestination(for: URL.self) { urls, _ in
@@ -205,8 +211,10 @@ struct MainView: View {
             Group {
                 if sidebar == .skipped {
                     SkippedList()
-                } else if sidebar == .paid {
-                    PaidList(records: filtered, selection: $selection)
+                } else if sidebar == .deleted {
+                    DeletedList(selection: $selection)
+                } else if sidebar == .paid || sidebar == .archived {
+                    PaidList(records: filtered, selection: $selection, archived: sidebar == .archived)
                 } else {
                     InvoiceList(records: filtered, selection: $selection)
                 }
@@ -214,8 +222,9 @@ struct MainView: View {
             .navigationSplitViewColumnWidth(min: 360, ideal: 420)
             .searchable(text: $search, placement: .toolbar, prompt: "Firma, Nummer, Betrag")
         } detail: {
-            if let id = selection, sidebar != .skipped, model.library.records.contains(where: { $0.id == id }) {
-                InvoiceDetail(id: id).id(id)
+            if let id = selection, sidebar != .skipped, let r = model.library.records.first(where: { $0.id == id }) {
+                // Archived and deleted invoices open locked, so nothing is changed by accident.
+                InvoiceDetail(id: id, startLocked: r.stage == .archived || r.fileMissing).id(id)
             } else {
                 EmptyDetail()
             }
@@ -263,7 +272,7 @@ struct MainView: View {
         if !outside.isEmpty {
             dropProblem = "„\(outside.joined(separator: "“, „"))“ liegt nicht im Hauptordner „\(ArchiveFolders.rootName(model.library))“. Nur Ordner darin können in die Seitenleiste."
         }
-        if !files.isEmpty { Task { await model.importFiles(files) } }
+        if !files.isEmpty { stageRequest = model.importRequest(files) }
     }
 
     private func deleteView(_ id: SavedView.ID) {
@@ -273,6 +282,7 @@ struct MainView: View {
 
     /// Shows an invoice in the "All" list with its detail open.
     private func openInvoice(_ id: InvoiceRecord.ID) {
+        guard model.library.liveRecords.contains(where: { $0.id == id }) else { return }
         pendingOpen = id
         sidebar = .all
     }
@@ -284,12 +294,13 @@ struct MainView: View {
     }
 
     private var filtered: [InvoiceRecord] {
-        var list = model.library.records
+        var list = sidebar == .deleted ? model.library.deleted : model.library.liveRecords
         switch sidebar {
-        case .unpaid: list = list.filter { $0.status == .unpaid }
-        case .paid: list = list.filter { $0.status == .paid }
+        case .unpaid: list = list.filter { $0.stage == .open }
+        case .paid: list = list.filter { $0.stage == .paid }
+        case .archived: list = list.filter { $0.stage == .archived }
         case .review: list = list.filter(\.needsReview)
-        case .all, .skipped, .dashboard, .archive, .view: break
+        case .all, .skipped, .dashboard, .archive, .view, .deleted: break
         }
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
@@ -336,7 +347,9 @@ struct InvoiceList: View {
                     }
                     Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                     Divider()
-                    Button("Aus der Liste entfernen (Datei bleibt)", role: .destructive) { model.library.remove(r.id) }
+                    Button("In den Papierkorb", role: .destructive) {
+                        do { try model.library.trash([r.id]) } catch { model.lastError = error.localizedDescription }
+                    }
                 }
         }
         .overlay {
@@ -349,8 +362,6 @@ struct InvoiceList: View {
 
 struct InvoiceRow: View {
     let record: InvoiceRecord
-    /// False for a paid invoice whose file is still waiting to be moved to the archive.
-    var archived = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -374,9 +385,11 @@ struct InvoiceRow: View {
                 .font(.caption).foregroundStyle(.secondary)
                 if record.fileMissing {
                     Text("Datei wurde verschoben oder gelöscht").font(.caption).foregroundStyle(.red)
-                } else if record.status == .paid, !archived {
-                    Label("Nicht im Archiv", systemImage: "tray.full")
-                        .font(.caption).foregroundStyle(.blue).lineLimit(1)
+                } else if record.needsReview {
+                    Text(record.reviewReasons.first ?? "").font(.caption).foregroundStyle(.orange).lineLimit(1)
+                } else if record.stage == .paid {
+                    Label(record.printedAt == nil ? "Nicht gedruckt" : "Gedruckt", systemImage: "printer")
+                        .font(.caption).foregroundStyle(record.printedAt == nil ? .blue : .secondary).lineLimit(1)
                 } else if record.needsReview {
                     Text(record.reviewReasons.first ?? "").font(.caption).foregroundStyle(.orange).lineLimit(1)
                 }
@@ -386,7 +399,7 @@ struct InvoiceRow: View {
     }
 
     private var icon: String {
-        if record.fileMissing { return "questionmark.folder" }
+        if record.fileMissing { return "trash" }
         if record.needsReview { return "exclamationmark.circle.fill" }
         return record.status == .paid ? "checkmark.circle.fill" : "circle"
     }
@@ -398,16 +411,24 @@ struct InvoiceRow: View {
     }
 }
 
-/// PDF on the left half, editable fields and actions on a glass panel on the right.
+/// PDF on the left half, fields and actions on a glass panel on the right. Locked invoices (archived ones, or
+/// opened from the archive table) show the fields read-only until the lock at the top is opened.
 struct InvoiceDetail: View {
     @Environment(AppModel.self) private var model
     let id: InvoiceRecord.ID
+    @State private var locked: Bool
     @State private var fields = InvoiceFields()
     @State private var totalText = ""
     @State private var hasDate = true
     @State private var paidDate = Date()
     /// The file name without extension, as shown in the field.
     @State private var fileName = ""
+    @State private var loaded = false
+
+    init(id: InvoiceRecord.ID, startLocked: Bool = false) {
+        self.id = id
+        _locked = State(initialValue: startLocked)
+    }
 
     private var record: InvoiceRecord? { model.library.records.first { $0.id == id } }
 
@@ -416,11 +437,17 @@ struct InvoiceDetail: View {
             HSplitView {
                 PDFPreview(url: record.fileURL)
                     .frame(minWidth: 300)
+                    .overlay {
+                        if record.fileMissing {
+                            ContentUnavailableView("Datei gelöscht", systemImage: "trash",
+                                                   description: Text("Die Datei liegt nicht mehr im Ordner, etwa weil sie im Finder gelöscht wurde."))
+                        }
+                    }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         header(record)
                         if !record.reviewReasons.isEmpty { reviewBox(record) }
-                        form
+                        form.disabled(locked)
                         filing(record)
                         origin(record)
                     }
@@ -429,20 +456,39 @@ struct InvoiceDetail: View {
                 .frame(minWidth: 300, idealWidth: 340, maxWidth: 420)
             }
             .onAppear { load(record) }
+            // Changes are kept when switching to another invoice, so the lists show them right away.
+            .onDisappear { saveIfChanged() }
         }
     }
 
     private func header(_ r: InvoiceRecord) -> some View {
-        HStack {
+        HStack(spacing: 8) {
+            Button { locked.toggle() } label: {
+                Label(locked ? "Gesperrt" : "Bearbeiten", systemImage: locked ? "lock.fill" : "lock.open")
+                    .font(.caption)
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .disabled(r.fileMissing)
+            .help(locked ? "Entsperren, um die Felder zu bearbeiten" : "Sperren, damit nichts versehentlich geändert wird")
             Label(r.source.label, systemImage: r.source == .eInvoiceXML ? "checkmark.seal.fill" : r.source == .appleIntelligence ? "apple.intelligence" : "text.viewfinder")
-                .font(.caption)
+                .font(.caption).lineLimit(1)
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .glassEffect(.regular.tint(r.source == .eInvoiceXML ? .green.opacity(0.3) : .clear), in: .capsule)
             Spacer()
-            Text(r.status == .paid ? "Bezahlt" : "Offen")
+            Text(r.fileMissing ? "Gelöscht" : r.stage.label)
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 10).padding(.vertical, 5)
-                .glassEffect(.regular.tint(r.status == .paid ? .green.opacity(0.35) : .orange.opacity(0.35)), in: .capsule)
+                .glassEffect(.regular.tint(Self.tint(r).opacity(0.35)), in: .capsule)
+        }
+    }
+
+    static func tint(_ r: InvoiceRecord) -> Color {
+        if r.fileMissing { return .red }
+        switch r.stage {
+        case .open: return .orange
+        case .paid: return .blue
+        case .archived: return .green
         }
     }
 
@@ -450,7 +496,12 @@ struct InvoiceDetail: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Bitte prüfen", systemImage: "exclamationmark.triangle.fill").font(.headline).foregroundStyle(.orange)
             ForEach(r.reviewReasons, id: \.self) { Text("• \($0)").font(.callout) }
-            Button("Passt so") { model.library.markReviewed(id) }.buttonStyle(.glass)
+            Text("Zählt erst nach der Prüfung in der Übersicht mit.").font(.caption).foregroundStyle(.secondary)
+            Button("Geprüft, passt so") {
+                saveIfChanged()
+                model.library.markReviewed(id)
+            }
+            .buttonStyle(.glass)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -481,7 +532,8 @@ struct InvoiceDetail: View {
     private func field(_ label: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label).font(.caption).foregroundStyle(.secondary)
-            TextField(label, text: text).textFieldStyle(.roundedBorder).labelsHidden()
+            // Return saves right away.
+            TextField(label, text: text).textFieldStyle(.roundedBorder).labelsHidden().onSubmit { saveIfChanged() }
         }
     }
 
@@ -490,61 +542,103 @@ struct InvoiceDetail: View {
         let o = model.library.organizer
         let ext = r.fileURL.pathExtension.isEmpty ? "pdf" : r.fileURL.pathExtension
         let templateName = o.baseName(for: edited, paidDate: r.paidDate)
-        let changed = edited != r.fields || fileName != currentName(r)
         return VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Dateiname").font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 4) {
-                    TextField("Dateiname", text: $fileName).textFieldStyle(.roundedBorder)
+                    TextField("Dateiname", text: $fileName).textFieldStyle(.roundedBorder).onSubmit { saveIfChanged() }
                     Text(".\(ext)").foregroundStyle(.secondary)
                 }
                 templateHint(templateName, matches: fileName == templateName) { fileName = templateName }
             }
+            .disabled(locked)
             GlassEffectContainer {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Button("Speichern & umbenennen") { save(r) }
                             .buttonStyle(.glass)
-                            .disabled(!changed || fileName.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .disabled(locked || !isChanged(r) || fileName.trimmingCharacters(in: .whitespaces).isEmpty)
                         Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                             .buttonStyle(.glass)
+                            .disabled(r.fileMissing)
                     }
-                    if r.status == .unpaid {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Bezahlt am").font(.caption).foregroundStyle(.secondary)
-                            HStack {
-                                DatePicker("Bezahlt am", selection: $paidDate, displayedComponents: .date).labelsHidden()
-                                Spacer(minLength: 8)
-                                Button("Als bezahlt markieren") { apply(status: .paid, paidDate: paidDate) }
-                                    .buttonStyle(.glassProminent)
-                                    .fixedSize()
-                            }
-                        }
-                    } else {
-                        HStack {
-                            Text("Bezahlt am \(r.paidDate?.formatted(date: .numeric, time: .omitted) ?? "–")")
-                            Spacer()
-                            Button("Als offen markieren") { apply(status: .unpaid, paidDate: nil) }.buttonStyle(.glass)
-                        }
-                        HStack {
-                            if model.library.isArchived(r) {
-                                Label("Im Archiv", systemImage: "archivebox").foregroundStyle(.secondary)
-                            } else {
-                                Label("Noch nicht im Archiv", systemImage: "tray").foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Ins Archiv verschieben") {
-                                    do { try model.library.archive([id]); if let r = record { load(r) } }
-                                    catch { model.lastError = error.localizedDescription }
-                                }
-                                .buttonStyle(.glassProminent)
-                            }
-                        }
-                    }
+                    if !r.fileMissing { stageControls(r) }
+                    Divider()
+                    printing(r)
                 }
             }
         }
         .padding(12)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
+    }
+
+    @ViewBuilder private func stageControls(_ r: InvoiceRecord) -> some View {
+        switch r.stage {
+        case .open:
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Bezahlt am").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    DatePicker("Bezahlt am", selection: $paidDate, displayedComponents: .date).labelsHidden()
+                    Spacer(minLength: 8)
+                    Button("Als bezahlt markieren") { apply(status: .paid, paidDate: paidDate) }
+                        .buttonStyle(.glassProminent)
+                        .fixedSize()
+                }
+            }
+            .disabled(locked)
+        case .paid, .archived:
+            HStack {
+                Text("Bezahlt am \(r.paidDate?.formatted(date: .numeric, time: .omitted) ?? "–")")
+                Spacer()
+                Button("Als offen markieren") { apply(status: .unpaid, paidDate: nil) }.buttonStyle(.glass).disabled(locked)
+            }
+            HStack {
+                if r.stage == .archived {
+                    Label("Im Archiv", systemImage: "archivebox").foregroundStyle(.secondary)
+                } else {
+                    Label("Noch nicht im Archiv", systemImage: "tray").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Ins Archiv verschieben") {
+                        saveIfChanged()
+                        do { try model.library.archive([id]); if let r = record { load(r) } }
+                        catch { model.lastError = error.localizedDescription }
+                    }
+                    .buttonStyle(.glassProminent)
+                }
+            }
+        }
+    }
+
+    /// Print this invoice, mark it printed by hand, or move it to the trash.
+    private func printing(_ r: InvoiceRecord) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button { InvoicePrinter.print([r], title: r.fileURL.deletingPathExtension().lastPathComponent, model: model) } label: {
+                    Label("Drucken", systemImage: "printer")
+                }
+                .buttonStyle(.glass)
+                .disabled(r.fileMissing)
+                .help("Beidseitig auf A4 drucken; danach als gedruckt markiert")
+                Spacer()
+                Toggle("Gedruckt", isOn: Binding(get: { r.printedAt != nil }, set: { model.library.setPrinted([r.id], $0) }))
+                    .toggleStyle(.checkbox)
+                    .help("Merkt sich, welche Rechnungen schon auf Papier abgelegt sind")
+            }
+            if let p = r.printedAt {
+                Text("Gedruckt am \(p.formatted(date: .numeric, time: .omitted))").font(.caption).foregroundStyle(.secondary)
+            }
+            if !r.fileMissing {
+                Button(role: .destructive) {
+                    do { try model.library.trash([r.id]) } catch { model.lastError = error.localizedDescription }
+                } label: {
+                    Label("In den Papierkorb", systemImage: "trash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+                .font(.callout)
+                .disabled(locked)
+            }
+        }
     }
 
     /// The name or folder the settings' template gives, with a button that puts it into the field.
@@ -564,6 +658,16 @@ struct InvoiceDetail: View {
     }
 
     private func currentName(_ r: InvoiceRecord) -> String { r.fileURL.deletingPathExtension().lastPathComponent }
+
+    private func isChanged(_ r: InvoiceRecord) -> Bool { editedFields != r.fields || fileName != currentName(r) }
+
+    /// Saves edits that were not saved yet (Return, switching invoices, archiving).
+    private func saveIfChanged() {
+        guard loaded, !locked, let r = record, !r.fileMissing, isChanged(r),
+              !fileName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        save(r)
+    }
+
     /// Saves fields and the file name. A name left as it was keeps following the template when the record did.
     private func save(_ r: InvoiceRecord) {
         do {
@@ -620,6 +724,7 @@ struct InvoiceDetail: View {
         hasDate = r.fields.invoiceDate != nil
         paidDate = Date()
         fileName = currentName(r)
+        loaded = true
     }
 
     private func apply(status: InvoiceStatus, paidDate: Date?) {
@@ -655,8 +760,40 @@ struct PDFPreview: NSViewRepresentable {
     }
 }
 
+/// Invoices whose file was deleted, in the app or in Finder. They no longer count anywhere and can be cleared.
+struct DeletedList: View {
+    @Environment(AppModel.self) private var model
+    @Binding var selection: InvoiceRecord.ID?
+    @State private var confirming = false
+
+    var body: some View {
+        List(model.library.deleted, selection: $selection) { r in
+            InvoiceRow(record: r).tag(r.id)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if !model.library.deleted.isEmpty {
+                Button("Gelöschte leeren", role: .destructive) { confirming = true }
+                    .buttonStyle(.glass)
+                    .padding(10)
+            }
+        }
+        .confirmationDialog("Alle gelöschten Rechnungen aus der App entfernen?", isPresented: $confirming) {
+            Button("Leeren", role: .destructive) { selection = nil; model.library.clearDeleted() }
+        } message: {
+            Text("Die Dateien selbst sind schon weg (Papierkorb oder Finder). Das lässt sich nicht rückgängig machen.")
+        }
+        .overlay {
+            if model.library.deleted.isEmpty {
+                ContentUnavailableView("Nichts gelöscht", systemImage: "trash",
+                                       description: Text("Rechnungen, deren Datei gelöscht wurde, auch im Finder, erscheinen hier."))
+            }
+        }
+    }
+}
+
 struct SkippedList: View {
     @Environment(AppModel.self) private var model
+    @State private var stageRequest: StageRequest?
 
     var body: some View {
         List(model.library.skipped) { s in
@@ -665,10 +802,12 @@ struct SkippedList: View {
                 Text(s.origin.subject).font(.caption)
                 Text(s.reason).font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Als Rechnung ablegen") {
-                        Task {
-                            do { try await model.library.importSkipped(s.id, extractor: model.extractor) }
-                            catch { model.lastError = error.localizedDescription }
+                    Button("Als Rechnung ablegen …") {
+                        stageRequest = StageRequest(title: "Als Rechnung ablegen", detail: s.origin.attachmentName, inPlace: false) { stage, date in
+                            Task {
+                                do { try await model.library.importSkipped(s.id, stage: stage, paidDate: date, extractor: model.extractor) }
+                                catch { model.lastError = error.localizedDescription }
+                            }
                         }
                     }
                     .buttonStyle(.glass)
@@ -679,6 +818,7 @@ struct SkippedList: View {
             }
             .padding(.vertical, 4)
         }
+        .stagePrompt($stageRequest)
         .overlay {
             if model.library.skipped.isEmpty {
                 ContentUnavailableView("Nichts übersprungen", systemImage: "tray",

@@ -18,6 +18,7 @@ struct ArchiveRow: Identifiable {
     let check: String
     let subject: String
     let importedAt: Date
+    let printed: String
     let record: InvoiceRecord
 
     /// Stands in for a missing date so rows still sort; shown as "–".
@@ -29,7 +30,7 @@ struct ArchiveRow: Identifiable {
         fileName = r.fileURL.lastPathComponent
         self.folder = folder
         invoiceDate = r.fields.invoiceDate ?? Self.noDate
-        status = r.status == .paid ? "Bezahlt" : "Offen"
+        status = r.stage.label
         paidDate = r.paidDate ?? Self.noDate
         invoiceNumber = r.fields.invoiceNumber
         company = r.fields.seller
@@ -40,6 +41,7 @@ struct ArchiveRow: Identifiable {
         check = r.fileMissing ? "Datei fehlt" : (r.reviewReasons.first ?? "")
         subject = r.origin.subject
         importedAt = r.importedAt
+        printed = r.printedAt == nil ? "" : "Gedruckt"
     }
 }
 
@@ -53,28 +55,38 @@ enum ArchiveFolders {
         return dir.hasPrefix(base) ? String(dir.dropFirst(base.count)) : dir
     }
 
-    /// Direct subfolders of a folder (relative to the main folder; "" is the main folder itself), from disk and
-    /// from filed invoices, with the number of invoices inside each, subfolders included.
-    /// The unpaid folder comes first, then newest folders first.
-    @MainActor static func children(of folder: String, _ library: Library) -> [(path: String, count: Int)] {
+    struct Child {
+        var path: String
+        /// PDFs on disk inside, subfolders included.
+        var files: Int
+        /// Of those, the ones not read into the app yet.
+        var unread: Int
+        /// Read invoices inside that still need a check.
+        var toCheck: Int
+    }
+
+    /// Direct subfolders of a folder (relative to the main folder; "" is the main folder itself) on disk, with
+    /// their files. The unpaid and paid folders come first, then newest folders first.
+    @MainActor static func children(of folder: String, _ library: Library) -> [Child] {
         let root = library.settings.rootFolder
         guard !root.isEmpty else { return [] }
         let prefix = folder.isEmpty ? "" : folder + "/"
-        var counts: [String: Int] = [:]
-        for r in library.records {
-            let f = relative(r.filePath, root: root)
-            guard !f.hasPrefix("/"), f.hasPrefix(prefix), f.count > prefix.count,
-                  let name = f.dropFirst(prefix.count).split(separator: "/").first else { continue }
-            counts[prefix + name, default: 0] += 1
-        }
         let dir = URL(fileURLWithPath: root).appendingPathComponent(folder)
+        let live = library.liveRecords
+        var result: [Child] = []
         for u in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
         where (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-            counts[prefix + u.lastPathComponent, default: 0] += 0
+            let path = prefix + u.lastPathComponent
+            let check = live.filter { r in
+                let f = relative(r.filePath, root: root)
+                return r.needsReview && (f == path || f.hasPrefix(path + "/"))
+            }.count
+            result.append(Child(path: path, files: Library.pdfs(in: [u]).count, unread: library.unknownFiles(in: u).count, toCheck: check))
         }
-        let unpaid = library.settings.unpaidFolder
-        return counts.map { (path: $0.key, count: $0.value) }.sorted { a, b in
-            if (a.path == unpaid) != (b.path == unpaid) { return a.path == unpaid }
+        let first = [library.settings.unpaidFolder, library.settings.paidFolder]
+        return result.sorted { a, b in
+            let ia = first.firstIndex(of: a.path) ?? 9, ib = first.firstIndex(of: b.path) ?? 9
+            if ia != ib { return ia < ib }
             return a.path.localizedStandardCompare(b.path) == .orderedDescending
         }
     }
@@ -91,8 +103,6 @@ struct ArchiveView: View {
     @Environment(AppModel.self) private var model
     /// The saved view shown, or nil for a folder or "All files".
     let viewID: SavedView.ID?
-    /// Opens an invoice in the invoice list.
-    var open: (InvoiceRecord.ID) -> Void
     /// Shows a saved view in the archive.
     var showView: (SavedView.ID) -> Void
     /// Shows a folder (relative to the main folder) in the archive.
@@ -107,11 +117,13 @@ struct ArchiveView: View {
     /// The filter rule whose editor is open.
     @State private var editingRule: FilterRule.ID?
     @State private var newName = ""
+    /// The invoice opened by double-click, shown with its PDF and details instead of the table.
+    @State private var opened: InvoiceRecord.ID?
+    @State private var stageRequest: StageRequest?
 
-    init(start: SavedView, viewID: SavedView.ID?, open: @escaping (InvoiceRecord.ID) -> Void,
+    init(start: SavedView, viewID: SavedView.ID?,
          showView: @escaping (SavedView.ID) -> Void, openFolder: @escaping (String) -> Void) {
         self.viewID = viewID
-        self.open = open
         self.showView = showView
         self.openFolder = openFolder
         _filter = State(initialValue: start)
@@ -130,14 +142,32 @@ struct ArchiveView: View {
     static let columnTitles: [(id: String, title: String)] = [
         ("file", "Dateiname"), ("folder", "Ordner"), ("date", "Rechnungsdatum"), ("status", "Status"), ("paid", "Bezahlt am"),
         ("number", "Rechnungsnummer"), ("company", "Firma"), ("buyer", "Empfänger"), ("amount", "Betrag"),
-        ("currency", "Währung"), ("source", "Gelesen aus"), ("check", "Prüfen"), ("subject", "Mail-Betreff"), ("imported", "Importiert"),
+        ("currency", "Währung"), ("source", "Gelesen aus"), ("check", "Prüfen"), ("subject", "Mail-Betreff"), ("imported", "Importiert"), ("printed", "Gedruckt"),
     ]
     /// Shown until the user changes the columns.
     static let defaultHidden: Set<String> = ["buyer", "currency", "source", "check", "subject", "imported"]
 
     var body: some View {
+        if let opened, model.library.records.contains(where: { $0.id == opened }) {
+            // Same view as in the invoice lists, locked until the user unlocks it.
+            InvoiceDetail(id: opened, startLocked: true)
+                .id(opened)
+                .navigationTitle(title)
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Button { self.opened = nil } label: { Label("Zurück", systemImage: "chevron.left") }
+                            .help("Zurück zur Tabelle")
+                            .keyboardShortcut("[", modifiers: .command)
+                    }
+                }
+        } else {
+            table
+        }
+    }
+
+    private var table: some View {
         let rows = filteredRows
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             folderStrip
             filterBar
             Table(rows, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columns) {
@@ -147,8 +177,8 @@ struct ArchiveView: View {
             .contextMenu(forSelectionType: InvoiceRecord.ID.self) { ids in
                 contextMenu(ids)
             } primaryAction: { ids in
-                // Double-click or Return opens the PDF, like Finder.
-                for r in records(ids) { NSWorkspace.shared.open(r.fileURL) }
+                // Double-click or Return opens the invoice with its PDF and details.
+                if let id = ids.first { opened = id }
             }
             .safeAreaInset(edge: .bottom) {
                 Text(footer(rows))
@@ -159,9 +189,19 @@ struct ArchiveView: View {
             }
             .overlay {
                 if rows.isEmpty {
-                    ContentUnavailableView(model.library.records.isEmpty ? "Noch keine Rechnungen" : "Keine passenden Rechnungen",
-                                           systemImage: "magnifyingglass",
-                                           description: Text(model.library.records.isEmpty ? "Abgelegte Rechnungen erscheinen hier." : "Filter oder Suche ändern."))
+                    if let folder = filter.folder, !unread(folder).isEmpty {
+                        ContentUnavailableView {
+                            Label("Dateien noch nicht eingelesen", systemImage: "doc.viewfinder")
+                        } description: {
+                            Text("In diesem Ordner liegen \(unread(folder).count) PDFs, die die App noch nicht kennt.")
+                        } actions: {
+                            importButton(folder).buttonStyle(.glassProminent)
+                        }
+                    } else {
+                        ContentUnavailableView(model.library.liveRecords.isEmpty ? "Noch keine Rechnungen" : "Keine passenden Rechnungen",
+                                               systemImage: "magnifyingglass",
+                                               description: Text(model.library.liveRecords.isEmpty ? "Abgelegte Rechnungen erscheinen hier." : "Filter oder Suche ändern."))
+                    }
                 }
             }
         }
@@ -185,6 +225,29 @@ struct ArchiveView: View {
                        name: newName, icon: "star.fill") { name, icon in saveNewView(name, icon) }
         }
         .onChange(of: columns) { saveColumns() }
+        .stagePrompt($stageRequest)
+    }
+
+    /// PDFs in the folder (relative to the main folder) that were never read.
+    private func unread(_ folder: String) -> [URL] {
+        model.library.unknownFiles(in: URL(fileURLWithPath: model.library.settings.rootFolder).appendingPathComponent(folder))
+    }
+
+    /// Reads the folder's unknown files in place, after asking which stage they get.
+    private func importButton(_ folder: String) -> some View {
+        let files = unread(folder)
+        return Button {
+            let url = URL(fileURLWithPath: model.library.settings.rootFolder).appendingPathComponent(folder)
+            stageRequest = StageRequest(title: files.count == 1 ? "1 Datei einlesen" : "\(files.count) Dateien einlesen",
+                                        detail: folder.isEmpty ? ArchiveFolders.rootName(model.library) : folder, inPlace: true,
+                                        suggested: model.library.suggestedStage(for: url)) { stage, date in
+                model.startReadingFiles(files, stage: stage, paidDate: date)
+            }
+        } label: {
+            Label(files.count == 1 ? "1 Datei einlesen …" : "\(files.count) Dateien einlesen …", systemImage: "square.and.arrow.down")
+        }
+        .disabled(model.isChecking || files.isEmpty)
+        .help("Liest die Rechnungsdaten aus den PDFs, ohne sie zu verschieben")
     }
 
     // MARK: - Columns
@@ -193,9 +256,19 @@ struct ArchiveView: View {
 
     @Columns private var mainColumns: some TableColumnContent<ArchiveRow, KeyPathComparator<ArchiveRow>> {
         TableColumn("Dateiname", value: \.fileName) { r in
-            Label(r.fileName, systemImage: r.record.fileURL.pathExtension.lowercased() == "xml" ? "chevron.left.forwardslash.chevron.right" : "doc.richtext")
-                .foregroundStyle(r.record.fileMissing ? .red : .primary)
-                .help(r.record.filePath)
+            HStack(spacing: 6) {
+                Label(r.fileName, systemImage: r.record.fileURL.pathExtension.lowercased() == "xml" ? "chevron.left.forwardslash.chevron.right" : "doc.richtext")
+                    .foregroundStyle(r.record.fileMissing ? .red : .primary)
+                    .help(r.record.filePath)
+                if r.record.needsReview {
+                    // The app was unsure about something; it counts in the overview only after a check.
+                    Text("Prüfen")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(.orange.opacity(0.15), in: .capsule)
+                        .help(r.record.reviewReasons.joined(separator: "\n") + "\nZählt erst nach der Prüfung in der Übersicht mit.")
+                }
+            }
         }
         .width(min: 140, ideal: 250)
         .customizationID("file")
@@ -209,7 +282,7 @@ struct ArchiveView: View {
             Text(r.status)
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 8).padding(.vertical, 2)
-                .background((r.record.status == .paid ? Color.green : Color.orange).opacity(0.18), in: .capsule)
+                .background(InvoiceDetail.tint(r.record).opacity(0.18), in: .capsule)
         }
         .width(min: 60, ideal: 70)
         .customizationID("status")
@@ -231,6 +304,7 @@ struct ArchiveView: View {
         TableColumn("Betrag", value: \.amount) { r in
             Text(r.record.fields.total.map { MenuBarView.money($0, r.currency) } ?? "–")
                 .monospacedDigit()
+                .foregroundStyle(r.record.reviewReasons.contains { $0.contains("Betrag") } ? .orange : .primary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .width(min: 70, ideal: 90)
@@ -250,13 +324,18 @@ struct ArchiveView: View {
         TableColumn("Importiert", value: \.importedAt) { r in Text(dateText(r.importedAt)).monospacedDigit() }
             .width(min: 80, ideal: 90)
             .customizationID("imported")
+        TableColumn("Gedruckt", value: \.printed) { r in
+            Image(systemName: r.record.printedAt == nil ? "" : "printer.fill").foregroundStyle(.secondary)
+        }
+        .width(min: 50, ideal: 60)
+        .customizationID("printed")
     }
 
     // MARK: - Filtering
 
     private var filteredRows: [ArchiveRow] {
         let root = model.library.settings.rootFolder
-        var rows = model.library.records.map { ArchiveRow($0, folder: ArchiveFolders.relative($0.filePath, root: root)) }
+        var rows = model.library.liveRecords.map { ArchiveRow($0, folder: ArchiveFolders.relative($0.filePath, root: root)) }
         if let folder = filter.folder, !folder.isEmpty { rows = rows.filter { $0.folder == folder || $0.folder.hasPrefix(folder + "/") } }
         rows = rows.filter { filter.matches($0.record, folder: $0.folder) }
         let q = filter.search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -281,7 +360,7 @@ struct ArchiveView: View {
     }
 
     private var years: [Int] {
-        Set(model.library.records.compactMap { $0.fields.invoiceDate.map { Calendar.current.component(.year, from: $0) } }).sorted(by: >)
+        Set(model.library.liveRecords.compactMap { $0.fields.invoiceDate.map { Calendar.current.component(.year, from: $0) } }).sorted(by: >)
     }
 
     /// Search field, the Filter menu that adds rules, and the rules as removable badges joined by „und“ or „oder“.
@@ -485,7 +564,7 @@ struct ArchiveView: View {
                 if !subs.isEmpty {
                     ScrollView(.horizontal) {
                         HStack(spacing: 10) {
-                            ForEach(subs, id: \.path) { s in folderTile(s.path, s.count) }
+                            ForEach(subs, id: \.path) { s in folderTile(s) }
                         }
                         .padding(.horizontal, 14).padding(.vertical, 4)
                     }
@@ -493,6 +572,20 @@ struct ArchiveView: View {
                 }
             }
             .padding(.top, 10)
+            let waiting = unread(folder)
+            if model.isReadingPast {
+                MailProgressPanel().padding(.horizontal, 14).padding(.top, 8)
+            } else if !waiting.isEmpty, !filteredRows.isEmpty {
+                HStack {
+                    Label(waiting.count == 1 ? "1 Datei in diesem Ordner ist noch nicht eingelesen." : "\(waiting.count) Dateien in diesem Ordner sind noch nicht eingelesen.",
+                          systemImage: "doc.viewfinder")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    importButton(folder).buttonStyle(.glass)
+                }
+                .font(.callout)
+                .padding(.horizontal, 16).padding(.top, 8)
+            }
         }
     }
 
@@ -524,19 +617,25 @@ struct ArchiveView: View {
         .disabled(current)
     }
 
-    private func folderTile(_ path: String, _ count: Int) -> some View {
+    private func folderTile(_ child: ArchiveFolders.Child) -> some View {
+        let path = child.path
         let starred = folderView(path) != nil
         let url = URL(fileURLWithPath: model.library.settings.rootFolder).appendingPathComponent(path)
         return Button { openFolder(path) } label: {
             VStack(spacing: 4) {
-                Image(systemName: path == model.library.settings.unpaidFolder ? "folder.fill.badge.questionmark" : "folder.fill")
+                Image(systemName: "folder.fill")
                     .font(.system(size: 34))
                     .foregroundStyle(.tint)
                     .frame(height: 38)
                 Text((path as NSString).lastPathComponent).font(.callout).lineLimit(1)
-                Text(count == 1 ? "1 Datei" : "\(count) Dateien").font(.caption).foregroundStyle(.secondary)
+                Text(child.files == 1 ? "1 Datei" : "\(child.files) Dateien").font(.caption).foregroundStyle(.secondary)
+                if child.unread > 0 {
+                    Text("\(child.unread) nicht eingelesen").font(.caption2).foregroundStyle(.blue)
+                } else if child.toCheck > 0 {
+                    Text("\(child.toCheck) prüfen").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                }
             }
-            .frame(width: 108, height: 96)
+            .frame(width: 118, height: 110)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -553,6 +652,15 @@ struct ArchiveView: View {
         }
         .contextMenu {
             Button("Öffnen") { openFolder(path) }
+            if child.unread > 0 {
+                Button("Dateien einlesen …") {
+                    let files = model.library.unknownFiles(in: url)
+                    stageRequest = StageRequest(title: "\(files.count) Dateien einlesen", detail: path, inPlace: true,
+                                                suggested: model.library.suggestedStage(for: url)) { stage, date in
+                        model.startReadingFiles(files, stage: stage, paidDate: date)
+                    }
+                }
+            }
             Button(starred ? "Stern entfernen" : "Mit Stern in die Seitenleiste") { toggleFolderStar(path) }
             Divider()
             Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
@@ -589,7 +697,7 @@ struct ArchiveView: View {
         let picked = records(ids)
         if !picked.isEmpty {
             if picked.count == 1, let r = picked.first {
-                Button("In Witthüs öffnen") { open(r.id) }
+                Button("Öffnen") { opened = r.id }
             }
             Button(picked.count == 1 ? "PDF öffnen" : "\(picked.count) Dateien öffnen") { picked.forEach { NSWorkspace.shared.open($0.fileURL) } }
             Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting(picked.map(\.fileURL)) }
@@ -599,6 +707,18 @@ struct ArchiveView: View {
             }
             if picked.contains(where: { $0.status == .paid }) {
                 Button("Als offen markieren") { setPaid(picked, false) }
+            }
+            if picked.contains(where: { $0.stage == .paid }) {
+                Button("Ins Archiv verschieben") {
+                    do { try model.library.archive(picked.map(\.id)) } catch { model.lastError = error.localizedDescription }
+                }
+            }
+            Button(picked.allSatisfy { $0.printedAt != nil } ? "Als nicht gedruckt markieren" : "Als gedruckt markieren") {
+                model.library.setPrinted(picked.map(\.id), !picked.allSatisfy { $0.printedAt != nil })
+            }
+            Divider()
+            Button("In den Papierkorb", role: .destructive) {
+                do { try model.library.trash(picked.map(\.id)) } catch { model.lastError = error.localizedDescription }
             }
         }
     }

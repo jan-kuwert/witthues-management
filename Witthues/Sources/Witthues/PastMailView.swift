@@ -38,6 +38,7 @@ struct PastMailForm: View {
     @State private var source = Source.mail
     /// Folders on disk to read, such as the main folder with invoices filed before the app.
     @State private var diskFolders: [URL] = []
+    @State private var stageRequest: StageRequest?
 
     enum Source: String, CaseIterable, Identifiable {
         case mail = "Aus Mails", folders = "Aus vorhandenen Ordnern"
@@ -67,20 +68,14 @@ struct PastMailForm: View {
                         .buttonStyle(.glass)
                         .help("Hört nach der aktuellen Datei auf. Schon Erfasstes bleibt erfasst.")
                 } else {
-                    Button("Lesen") {
-                        if source == .mail {
-                            // Keeps the folder order from the list, so progress reads top to bottom.
-                            model.startReadingPast(mailboxes: folders.filter(chosen.contains), from: from, to: to)
-                        } else {
-                            model.startReadingFolders(diskFolders)
-                        }
-                    }
+                    Button("Lesen …") { askStage() }
                     .buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.isChecking || (source == .mail ? chosen.isEmpty : diskFolders.isEmpty))
                 }
             }
         }
+        .stagePrompt($stageRequest)
         .task { await loadFolders() }
         .onAppear {
             let root = model.library.settings.rootFolder
@@ -88,10 +83,29 @@ struct PastMailForm: View {
         }
     }
 
+    /// Asks which stage the invoices get, then starts reading.
+    private func askStage() {
+        if source == .mail {
+            // Keeps the folder order from the list, so progress reads top to bottom.
+            let boxes = folders.filter(chosen.contains)
+            stageRequest = StageRequest(title: "Mails einlesen",
+                                        detail: "\(boxes.map(IMAPClient.displayName).joined(separator: ", ")), \(from.formatted(date: .numeric, time: .omitted)) bis \(to.formatted(date: .numeric, time: .omitted))",
+                                        inPlace: false, suggested: .open) { [from, to] stage, date in
+                model.startReadingPast(mailboxes: boxes, from: from, to: to, stage: stage, paidDate: date)
+            }
+        } else {
+            let list = diskFolders
+            stageRequest = StageRequest(title: "Ordner einlesen", detail: list.map(\.lastPathComponent).joined(separator: ", "),
+                                        inPlace: true, suggested: list.first.map(model.library.suggestedStage) ?? .archived) { stage, date in
+                model.startReadingFolders(list, stage: stage, paidDate: date)
+            }
+        }
+    }
+
     /// Existing invoice PDFs are read where they lie, without moving or renaming, so they count in the statistics.
     private var folderOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Liest Rechnungs-PDFs, die schon in Ordnern liegen (mit Unterordnern), und nimmt sie in die Liste und die Übersicht auf. Die Dateien werden nicht verschoben oder umbenannt. Rechnungen im Ordner für offene Rechnungen zählen als offen, alle anderen als bezahlt. Schon bekannte Dateien werden übersprungen.")
+            Text("Liest Rechnungs-PDFs, die schon in Ordnern liegen (mit Unterordnern), und nimmt sie in die Liste und die Übersicht auf. Die Dateien werden nicht verschoben oder umbenannt. Vor dem Lesen fragt die App, ob sie als offen, bezahlt oder archiviert gelten. Schon bekannte Dateien werden übersprungen.")
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Ordner").font(.headline)

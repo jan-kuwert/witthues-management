@@ -41,21 +41,27 @@ struct FolderSettings: View {
                 Text("Einen bestehenden Ordner wählen, zum Beispiel in OneDrive. Vorhandene Unterordner werden weiterverwendet, fehlende bei Bedarf angelegt.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Vorlagen") {
-                templateField("Ordner für offene Rechnungen", text: $library.settings.unpaidFolder, existingPicker: true)
-                templateField("Ordner für bezahlte (Archiv)", text: $library.settings.paidFolder, existingPicker: true)
-                templateField("Dateiname", text: $library.settings.fileName, existingPicker: false)
-                Text("/ trennt Unterordner, z. B. {yyyy}/{yyyy}-{mm}. Die Endung .pdf wird automatisch angehängt.")
+            Section {
+                stageFolder(.open, "Neue Rechnungen aus Mails, bis sie bezahlt sind.", text: $library.settings.unpaidFolder)
+                stageFolder(.paid, "Bezahlt, wartet auf Drucken und Archivieren.", text: $library.settings.paidFolder)
+                stageFolder(.archived, "Gedruckt und abgeschlossen. Mit Platzhaltern, z. B. ein Ordner pro Monat.", text: $library.settings.archiveFolder)
+                Text("Alle Ordner liegen im Hauptordner. / trennt Unterordner, z. B. {yyyy}/{yyyy}-{mm}.")
                     .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Ordner je Status")
+            }
+            Section("Dateiname") {
+                templateField("Dateiname", text: $library.settings.fileName, existingPicker: false)
+                Text("Die Endung .pdf wird automatisch angehängt.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Vorschau") {
                 let o = model.library.organizer
                 let f = AppSettings.sampleFields
-                LabeledContent("Neue Rechnung") {
-                    Text(o.relativePath(for: f, status: .unpaid, paidDate: nil)).font(.callout.monospaced()).textSelection(.enabled)
-                }
-                LabeledContent("Nach Zahlung (heute)") {
-                    Text(o.relativePath(for: f, status: .paid, paidDate: Date())).font(.callout.monospaced()).textSelection(.enabled)
+                ForEach(Stage.allCases) { stage in
+                    LabeledContent(stage.label) {
+                        Text(o.relativePath(for: f, stage: stage, paidDate: stage == .open ? nil : Date()))
+                            .font(.callout.monospaced()).textSelection(.enabled)
+                    }
                 }
             }
             Section("Platzhalter") {
@@ -69,6 +75,15 @@ struct FolderSettings: View {
         }
         .formStyle(.grouped)
         .frame(height: 620)
+    }
+
+    private func stageFolder(_ stage: Stage, _ note: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(stage.label, systemImage: stage.symbol).font(.headline)
+            Text(note).font(.caption).foregroundStyle(.secondary)
+            templateField(stage.label, text: text, existingPicker: true)
+        }
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder

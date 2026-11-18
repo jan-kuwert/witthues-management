@@ -98,6 +98,7 @@ public enum MailChecker {
     /// check is not changed. Stops between mails when the task is cancelled; what is filed stays filed.
     @MainActor
     public static func readPast(library: Library, password: String, mailboxes: [String], from: Date, to: Date,
+                                stage: Stage = .open, paidDate: Date? = nil,
                                 progress: @MainActor (MailProgress) -> Void = { _ in }) async throws -> CheckSummary {
         let s = library.settings
         guard s.isMailConfigured else { throw IMAPError(message: "Bitte zuerst das Mailkonto in den Einstellungen eintragen") }
@@ -122,7 +123,8 @@ public enum MailChecker {
                 try Task.checkCancellation()
                 p.current = n + 1
                 // One unreadable mail should not stop a long import; it is listed in the result instead.
-                if let error = try await read(uid: uid, client: client, library: library, extractor: extractor, into: &p, report: progress) {
+                if let error = try await read(uid: uid, client: client, library: library, extractor: extractor, stage: stage, paidDate: paidDate,
+                                              into: &p, report: progress) {
                     p.summary.errors.append(error)
                     progress(p)
                 }
@@ -134,7 +136,7 @@ public enum MailChecker {
     /// Fetches one mail and files its attachments, reporting progress as it goes; returns a message when filing failed.
     @MainActor
     private static func read(uid: UInt32, client: IMAPClient, library: Library, extractor: Extractor,
-                             into p: inout MailProgress, report: @MainActor (MailProgress) -> Void) async throws -> String? {
+                             stage: Stage = .open, paidDate: Date? = nil, into p: inout MailProgress, report: @MainActor (MailProgress) -> Void) async throws -> String? {
         report(p)
         guard let raw = try await client.fetch(uid: uid) else { return nil }
         p.summary.messages += 1
@@ -142,7 +144,7 @@ public enum MailChecker {
         p.subject = mail.subject
         report(p)
         do {
-            for outcome in try await library.ingest(mail: mail, extractor: extractor) {
+            for outcome in try await library.ingest(mail: mail, extractor: extractor, stage: stage, paidDate: paidDate) {
                 switch outcome {
                 case .filed: p.summary.filed += 1
                 case .skipped: p.summary.skipped += 1

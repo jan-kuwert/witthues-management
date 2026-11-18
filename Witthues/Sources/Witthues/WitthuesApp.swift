@@ -83,9 +83,9 @@ struct MenuBarView: View {
                     .help("Beenden; Mails werden dann nicht mehr abgerufen")
                 }
             }
-            if !model.library.records.isEmpty {
+            if !model.library.liveRecords.isEmpty {
                 Divider()
-                ForEach(model.library.records.prefix(5)) { r in
+                ForEach(model.library.liveRecords.prefix(5)) { r in
                     HStack {
                         Image(systemName: r.status == .paid ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(r.status == .paid ? .green : .orange)
