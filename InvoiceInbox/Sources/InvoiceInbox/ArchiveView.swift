@@ -457,6 +457,8 @@ struct ArchiveView: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
+        // Can be dragged onto the sidebar to add it there, or to Finder.
+        .draggable(url)
         .overlay(alignment: .topTrailing) {
             Button { toggleFolderStar(path) } label: {
                 Image(systemName: starred ? "star.fill" : "star").foregroundStyle(starred ? AnyShapeStyle(.yellow) : AnyShapeStyle(.tertiary))

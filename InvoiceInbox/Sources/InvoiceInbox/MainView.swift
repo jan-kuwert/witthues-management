@@ -22,6 +22,9 @@ struct MainView: View {
     @State private var pendingOpen: InvoiceRecord.ID?
     /// The saved view being renamed from the sidebar.
     @State private var renaming: SavedView?
+    @State private var drag = CommandDragOut()
+    /// Shown when a folder from outside the main folder is dropped on the sidebar.
+    @State private var dropProblem: String?
 
     var body: some View {
         Group {
@@ -88,6 +91,15 @@ struct MainView: View {
                 model.library.views[i].icon = icon
             }
         }
+        // Installed here, not on the sidebar: the sidebar is rebuilt when switching between list, archive and dashboard.
+        .onAppear {
+            drag.remove = { id in
+                // Folders lose their entry; views keep existing and only lose the star.
+                if model.library.views.first(where: { $0.id == id })?.isFolder == true { deleteView(id) } else { setStar(id, false) }
+            }
+            drag.install()
+        }
+        .onDisappear { drag.uninstall() }
         .onChange(of: sidebar) {
             selection = pendingOpen
             pendingOpen = nil
@@ -116,7 +128,8 @@ struct MainView: View {
                 ForEach(model.library.views.filter { $0.isFolder == true && $0.starred }) { v in
                     Label(v.name, systemImage: v.symbol)
                         .tag(SidebarItem.view(v.id))
-                        .help(v.folder ?? "")
+                        .help((v.folder ?? "") + "\n⌘ und aus der Seitenleiste ziehen zum Entfernen")
+                        .removableByCommandDrag(v.id, drag)
                         .contextMenu {
                             Button("Bearbeiten …") { renaming = v }
                             Button("Im Finder zeigen") {
@@ -133,6 +146,8 @@ struct MainView: View {
                     ForEach(starred) { v in
                         Label(v.name, systemImage: v.symbol)
                             .tag(SidebarItem.view(v.id))
+                            .help("⌘ und aus der Seitenleiste ziehen zum Entfernen")
+                            .removableByCommandDrag(v.id, drag)
                             .contextMenu {
                                 Button("Bearbeiten …") { renaming = v }
                                 Button("Stern entfernen") { setStar(v.id, false) }
@@ -147,6 +162,17 @@ struct MainView: View {
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 210)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { drag.area = $0 }
+        // Folders dropped here are added under "Archiv"; other files are imported as invoices.
+        .dropDestination(for: URL.self) { urls, _ in
+            dropOnSidebar(urls)
+            return true
+        }
+        .alert("Ordner nicht im Hauptordner", isPresented: Binding(get: { dropProblem != nil }, set: { if !$0 { dropProblem = nil } })) {
+            Button("OK") { dropProblem = nil }
+        } message: {
+            Text(dropProblem ?? "")
+        }
         .safeAreaInset(edge: .bottom) {
             StatusLine()
                 .padding(10)
@@ -193,6 +219,33 @@ struct MainView: View {
         guard let i = model.library.views.firstIndex(where: { $0.id == id }) else { return }
         model.library.views[i].starred = starred
         if !starred, sidebar == .view(id) { sidebar = .archive(nil) }
+    }
+
+    /// Adds dropped folders inside the main folder to the sidebar; imports anything else.
+    private func dropOnSidebar(_ urls: [URL]) {
+        let root = URL(fileURLWithPath: model.library.settings.rootFolder).resolvingSymlinksInPath().path
+        var files: [URL] = []
+        var outside: [String] = []
+        var added: SavedView.ID?
+        for url in urls {
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { files.append(url); continue }
+            let path = url.resolvingSymlinksInPath().path
+            if path == root { sidebar = .archive(""); continue }
+            guard !model.library.settings.rootFolder.isEmpty, path.hasPrefix(root + "/") else { outside.append(url.lastPathComponent); continue }
+            let folder = String(path.dropFirst(root.count + 1))
+            if let existing = model.library.views.first(where: { $0.isFolder == true && $0.folder == folder }) {
+                added = existing.id
+            } else {
+                let v = SavedView(name: url.lastPathComponent, folder: folder, icon: "folder", isFolder: true)
+                model.library.views.append(v)
+                added = v.id
+            }
+        }
+        if let added { sidebar = .view(added) }
+        if !outside.isEmpty {
+            dropProblem = "„\(outside.joined(separator: "“, „"))“ liegt nicht im Hauptordner „\(ArchiveFolders.rootName(model.library))“. Nur Ordner darin können in die Seitenleiste."
+        }
+        if !files.isEmpty { Task { await model.importFiles(files) } }
     }
 
     private func deleteView(_ id: SavedView.ID) {
@@ -535,5 +588,77 @@ struct SkippedList: View {
                                        description: Text("PDFs aus Mails, die keine Rechnungen sind, erscheinen hier."))
             }
         }
+    }
+}
+
+/// ⌘-dragging a starred folder or view out of the sidebar removes it, like Finder's sidebar.
+/// Uses an AppKit event monitor because the sidebar's table view keeps the mouse-up from SwiftUI gestures.
+@MainActor @Observable final class CommandDragOut {
+    /// Frames of the removable sidebar entries, in window coordinates (top-left origin).
+    var frames: [SavedView.ID: CGRect] = [:]
+    /// The sidebar's frame; releasing outside it removes the entry.
+    var area: CGRect = .zero
+    private(set) var dragging: SavedView.ID?
+    private(set) var offset: CGSize = .zero
+    private(set) var outside = false
+    var remove: (SavedView.ID) -> Void = { _ in }
+    @ObservationIgnored private var start: CGPoint = .zero
+    @ObservationIgnored private var monitor: Any?
+
+    func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let height = event.window?.contentView?.bounds.height else { return event }
+            let p = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+            let (type, command) = (event.type, event.modifierFlags.contains(.command))
+            // Local monitors run on the main thread.
+            let consumed = MainActor.assumeIsolated { self?.handle(type, at: p, command: command) ?? false }
+            return consumed ? nil : event
+        }
+    }
+
+    func uninstall() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    /// Returns true when the event belongs to a ⌘-drag and should not reach the sidebar.
+    private func handle(_ type: NSEvent.EventType, at p: CGPoint, command: Bool) -> Bool {
+        switch type {
+        case .leftMouseDown:
+            // Anywhere on the row counts, not only on its label.
+            guard command, area.contains(p),
+                  let id = frames.first(where: { $0.value.insetBy(dx: 0, dy: -4).minY...$0.value.insetBy(dx: 0, dy: -4).maxY ~= p.y })?.key
+            else { return false }
+            dragging = id
+            start = p
+            return true
+        case .leftMouseDragged:
+            guard dragging != nil else { return false }
+            offset = CGSize(width: p.x - start.x, height: p.y - start.y)
+            outside = !area.contains(p)
+            (outside ? NSCursor.disappearingItem : NSCursor.arrow).set()
+            return true
+        default:
+            guard let id = dragging else { return false }
+            dragging = nil
+            NSCursor.arrow.set()
+            if !area.contains(p) {
+                frames[id] = nil
+                remove(id)
+            }
+            withAnimation(.snappy) { offset = .zero; outside = false }
+            return true
+        }
+    }
+}
+
+extension View {
+    /// Lets the entry be ⌘-dragged out of the sidebar to remove it.
+    func removableByCommandDrag(_ id: SavedView.ID, _ drag: CommandDragOut) -> some View {
+        self
+            .offset(drag.dragging == id ? drag.offset : .zero)
+            .opacity(drag.dragging == id && drag.outside ? 0.4 : 1)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { drag.frames[id] = $0 }
     }
 }
