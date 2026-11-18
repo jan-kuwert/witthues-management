@@ -7,10 +7,10 @@ struct DashboardView: View {
     @Environment(AppModel.self) private var model
     /// Opens an invoice in the list.
     var open: (InvoiceRecord.ID) -> Void
-    @State private var period: Period = .twelveMonths
+    @State private var period: Period = .thisMonth
 
     enum Period: String, CaseIterable, Identifiable {
-        case twelveMonths = "Last 12 months", thisYear = "This year", all = "All time"
+        case thisMonth = "This month", thisYear = "This year", all = "All time"
         var id: Self { self }
     }
 
@@ -47,7 +47,7 @@ struct DashboardView: View {
                         .frame(maxWidth: .infinity, minHeight: 400)
                 } else {
                     kpis
-                    card("Amount per month", subtitle: "By invoice date, \(currency)") { monthlyChart }
+                    card(period == .thisMonth ? "Amount per day" : "Amount per month", subtitle: "By invoice date, \(currency)") { monthlyChart }
                     HStack(alignment: .top, spacing: 16) {
                         card("Top companies", subtitle: "Total \(currency) in this period") { companiesChart }
                         card("How invoices were read", subtitle: "All invoices in this period") { sourcesChart }
@@ -85,7 +85,7 @@ struct DashboardView: View {
     private var periodStart: Date? {
         let cal = Calendar.current
         switch period {
-        case .twelveMonths: return cal.date(byAdding: .month, value: -11, to: cal.dateInterval(of: .month, for: Date())!.start)
+        case .thisMonth: return cal.dateInterval(of: .month, for: Date())!.start
         case .thisYear: return cal.dateInterval(of: .year, for: Date())!.start
         case .all: return nil
         }
@@ -102,11 +102,14 @@ struct DashboardView: View {
     private func sum(_ list: [InvoiceRecord]) -> Double { list.reduce(0) { $0 + amount($1) } }
     private func money(_ v: Double) -> String { v.formatted(.currency(code: currency).precision(.fractionLength(0...2))) }
 
+    /// Bars are days for "This month" and months otherwise.
+    private var bucket: Calendar.Component { period == .thisMonth ? .day : .month }
+
     private var monthly: [MonthAmount] {
         let cal = Calendar.current
         var sums: [String: MonthAmount] = [:]
         for r in countable {
-            let month = cal.dateInterval(of: .month, for: date(r))!.start
+            let month = cal.dateInterval(of: bucket, for: date(r))!.start
             let status = r.status == .paid ? "Paid" : "Unpaid"
             sums["\(month.timeIntervalSince1970)-\(status)", default: MonthAmount(month: month, status: status, amount: 0)].amount += amount(r)
         }
@@ -170,18 +173,24 @@ struct DashboardView: View {
 
     private var monthlyChart: some View {
         Chart(monthly) { m in
-            BarMark(x: .value("Month", m.month, unit: .month), y: .value("Amount", m.amount))
+            BarMark(x: .value("Date", m.month, unit: bucket), y: .value("Amount", m.amount))
                 .foregroundStyle(by: .value("Status", m.status))
                 .cornerRadius(4)
         }
         .chartForegroundStyleScale(["Unpaid": Color.orange, "Paid": Color.green])
         .chartXScale(domain: monthDomain)
-        .chartXAxis { AxisMarks(values: .stride(by: .month)) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.month(.abbreviated).year(.twoDigits)) } }
+        .chartXAxis {
+            AxisMarks(values: .stride(by: bucket, count: period == .thisMonth ? 5 : 1)) { _ in
+                AxisGridLine()
+                AxisValueLabel(format: period == .thisMonth ? .dateTime.day().month(.abbreviated) : .dateTime.month(.abbreviated).year(.twoDigits))
+            }
+        }
         .chartYAxis { AxisMarks { v in AxisGridLine(); AxisValueLabel { if let d = v.as(Double.self) { Text(money(d)) } } } }
         .frame(height: 240)
+        .overlay { if countable.isEmpty { Text("No invoices in this period").foregroundStyle(.secondary) } }
     }
 
-    /// Shows every month of the period, including months without invoices.
+    /// Shows every day or month of the period, including ones without invoices.
     private var monthDomain: ClosedRange<Date> {
         let cal = Calendar.current
         let end = cal.dateInterval(of: .month, for: Date())!.end
@@ -198,6 +207,7 @@ struct DashboardView: View {
                 .annotation(position: .trailing) { Text(money(c.value)).font(.caption).foregroundStyle(.secondary) }
         }
         .chartXAxis(.hidden)
+        .overlay { if data.isEmpty { Text("No invoices in this period").foregroundStyle(.secondary) } }
         .frame(height: CGFloat(max(data.count, 1)) * 34 + 10)
     }
 
@@ -210,6 +220,7 @@ struct DashboardView: View {
         .chartForegroundStyleScale([ExtractionSource.eInvoiceXML.rawValue: Color.green, ExtractionSource.appleIntelligence.rawValue: Color.blue,
                                     ExtractionSource.textRules.rawValue: Color.orange, ExtractionSource.manual.rawValue: Color.gray])
         .chartLegend(position: .bottom, alignment: .leading)
+        .overlay { if sources.isEmpty { Text("No invoices in this period").foregroundStyle(.secondary) } }
         .frame(height: 220)
     }
 
