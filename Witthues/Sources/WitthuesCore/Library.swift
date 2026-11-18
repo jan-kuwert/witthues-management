@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import ImageIO
 import Observation
 
 /// Everything the app remembers: filed invoices, skipped attachments and how far each mailbox was read.
@@ -79,8 +80,10 @@ public final class Library {
     }
 
     public func ingest(data: Data, fileName: String, origin: MailOrigin, extractor: Extractor,
-                       companionXML: (MailAttachment, InvoiceFields)? = nil, force: Bool = false) async throws -> Outcome {
-        let hash = Self.sha256(data)
+                       companionXML: (MailAttachment, InvoiceFields)? = nil, force: Bool = false,
+                       sourceHash: String? = nil) async throws -> Outcome {
+        // A photo turned into a PDF is recognised by the photo, since each conversion gives a new PDF.
+        let hash = sourceHash ?? Self.sha256(data)
         if records.contains(where: { $0.sha256 == hash }) { return .duplicate }
         if !force, skipped.contains(where: { $0.storedPath.hasSuffix(hash + "." + Self.ext(fileName)) }) { return .duplicate }
 
@@ -107,6 +110,55 @@ public final class Library {
         records.insert(record, at: 0)
         save()
         return .filed(record)
+    }
+
+    /// File types a paid invoice can be imported from: PDFs, e-invoice XML and photos or scans.
+    public static let importableExtensions: Set<String> = ["pdf", "xml", "jpg", "jpeg", "png", "heic", "heif", "tif", "tiff"]
+
+    /// Files an invoice the user says is already paid, straight into the archive folder.
+    /// Photos and scans are saved as a one-page PDF. Returns nil when the same file was imported before.
+    public func ingestPaid(data: Data, fileName: String, paidOn date: Date, origin: MailOrigin, extractor: Extractor) async throws -> InvoiceRecord? {
+        let hash = Self.sha256(data)
+        var data = data
+        var name = fileName
+        if !["pdf", "xml"].contains(Self.ext(fileName)) {
+            guard let pdf = Self.pdf(fromImage: data) else { throw IMAPError(message: "\(fileName) ist kein lesbares Bild") }
+            data = pdf
+            name = (fileName as NSString).deletingPathExtension + ".pdf"
+        }
+        // The user says it is an invoice, so it is filed even if the checks would skip it.
+        guard case .filed(let record) = try await ingest(data: data, fileName: name, origin: origin, extractor: extractor, force: true,
+                                                     sourceHash: hash)
+        else { return nil }
+        // Without an invoice date the archive folder would be "YYYY-MM"; use the payment date and ask for a check.
+        if record.fields.invoiceDate == nil, let i = records.firstIndex(where: { $0.id == record.id }) {
+            records[i].fields.invoiceDate = Calendar.current.startOfDay(for: date)
+            records[i].reviewReasons.append("Kein Rechnungsdatum gefunden, Zahlungsdatum verwendet")
+        }
+        try setPaid(record.id, true, on: date)
+        return records.first { $0.id == record.id }
+    }
+
+    /// A photo as a one-page PDF, A4 wide, upright, at most 3000 pixels on the long side.
+    static func pdf(fromImage data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 3000,
+              ] as CFDictionary)
+        else { return nil }
+        let width = 595.0
+        var box = CGRect(x: 0, y: 0, width: width, height: width * Double(image.height) / Double(image.width))
+        let out = NSMutableData()
+        guard let consumer = CGDataConsumer(data: out as CFMutableData),
+              let context = CGContext(consumer: consumer, mediaBox: &box, nil) else { return nil }
+        context.beginPDFPage(nil)
+        context.interpolationQuality = .high
+        context.draw(image, in: box)
+        context.endPDFPage()
+        context.closePDF()
+        return out as Data
     }
 
     /// Files a skipped attachment as an invoice after all.

@@ -25,6 +25,7 @@ struct MainView: View {
     @State private var drag = CommandDragOut()
     /// Shown when a folder from outside the main folder is dropped on the sidebar.
     @State private var dropProblem: String?
+    @State private var importingPaid = false
 
     var body: some View {
         Group {
@@ -50,6 +51,13 @@ struct MainView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    importingPaid = true
+                } label: {
+                    Label("Bezahlte Rechnung hinzufügen", systemImage: "doc.badge.plus")
+                }
+                .help("Bezahlte Rechnung aus Fotos, per iPhone-Scan oder aus einer Datei hinzufügen (⇧⌘N)")
+                .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button {
                     model.checkNow()
                 } label: {
@@ -84,6 +92,7 @@ struct MainView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 20))
             }
         }
+        .sheet(isPresented: $importingPaid) { PaidImportSheet() }
         .sheet(item: $renaming) { v in
             ViewEditor(title: v.isFolder == true ? "Ordner bearbeiten" : "Ansicht bearbeiten", name: v.name, icon: v.symbol) { name, icon in
                 guard let i = model.library.views.firstIndex(where: { $0.id == v.id }) else { return }

@@ -75,6 +75,31 @@ final class AppModel {
         }
     }
 
+    /// Files invoices that are already paid; returns a short German summary for the user.
+    func importPaid(_ files: [(Data, String)], paidOn date: Date) async -> String {
+        var filed = 0, duplicates = 0
+        var failed: [String] = []
+        for (data, name) in files {
+            do {
+                if try await library.ingestPaid(data: data, fileName: name, paidOn: date,
+                                                origin: MailOrigin(subject: "Bezahlt, von Hand hinzugefügt", attachmentName: name),
+                                                extractor: extractor) != nil {
+                    filed += 1
+                } else {
+                    duplicates += 1
+                }
+            } catch {
+                failed.append(name)
+                lastError = "\(name): \(error.localizedDescription)"
+            }
+        }
+        var parts: [String] = []
+        if filed > 0 { parts.append(filed == 1 ? "1 Rechnung als bezahlt abgelegt" : "\(filed) Rechnungen als bezahlt abgelegt") }
+        if duplicates > 0 { parts.append(duplicates == 1 ? "1 war schon vorhanden" : "\(duplicates) waren schon vorhanden") }
+        if !failed.isEmpty { parts.append("nicht lesbar: " + failed.joined(separator: ", ")) }
+        return parts.isEmpty ? "Nichts hinzugefügt" : parts.joined(separator: " · ")
+    }
+
     var unpaidCount: Int { library.records.filter { $0.status == .unpaid }.count }
 
     // MARK: - Start at login

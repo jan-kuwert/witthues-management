@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
 @testable import WitthuesCore
 
@@ -113,6 +115,40 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
 }
 
 @MainActor @Suite struct FilingTests {
+    @Test func photoOfPaidInvoiceGoesStraightToArchiveAsPDF() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
+        lib.settings.paidFolder = "Archiv/{paid_yyyy}-{paid_mm}"
+        // A portrait PNG, like a phone photo of a receipt.
+        let ctx = try #require(CGContext(data: nil, width: 300, height: 600, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 300, height: 600))
+        let png = NSMutableData()
+        let dest = try #require(CGImageDestinationCreateWithData(png as CFMutableData, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(dest, try #require(ctx.makeImage()), nil)
+        #expect(CGImageDestinationFinalize(dest))
+
+        let ex = Extractor(useAppleIntelligence: false)
+        // A blank photo would not pass as an invoice from mail; imported by hand it is filed anyway.
+        let r = try #require(try await lib.ingestPaid(data: png as Data, fileName: "IMG_0001.png", paidOn: day(2026, 4, 9), origin: MailOrigin(), extractor: ex))
+        #expect(r.status == .paid)
+        #expect(r.paidDate == day(2026, 4, 9))
+        #expect(r.filePath.contains("/Rechnungen/Archiv/2026-04/26-04-09 "))
+        // No date could be read from the blank photo, so the payment date stands in and it is flagged.
+        #expect(r.needsReview)
+        #expect(r.filePath.hasSuffix(".pdf"))
+        let saved = try Data(contentsOf: r.fileURL)
+        #expect(saved.prefix(4) == Data("%PDF".utf8))
+        // Portrait stays portrait: A4 width, twice as high.
+        let page = try #require(CGPDFDocument(CGDataProvider(data: saved as CFData)!)?.page(at: 1))
+        #expect(page.getBoxRect(.mediaBox).size == CGSize(width: 595, height: 1190))
+        // Importing the same photo again files nothing.
+        #expect(try await lib.ingestPaid(data: png as Data, fileName: "IMG_0001.png", paidOn: day(2026, 4, 9), origin: MailOrigin(), extractor: ex) == nil)
+        #expect(lib.records.count == 1)
+    }
+
     @Test func fileThenArchiveByPaymentMonth() async throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let lib = Library(directory: tmp.appendingPathComponent("data"))
