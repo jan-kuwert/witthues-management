@@ -259,3 +259,15 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(DashboardPeriod.all.interval(now: now) == nil)
     }
 }
+
+@Suite struct MailFolderTests {
+    @Test func folderNamesAndMailLinks() {
+        // IMAP sends non-ASCII folder names in modified UTF-7.
+        #expect(IMAPClient.displayName("Entw&APw-rfe") == "Entwürfe")
+        #expect(IMAPClient.displayName("INBOX/Gel&APY-scht") == "INBOX/Gelöscht")
+        #expect(IMAPClient.displayName("A &- B") == "A & B")
+        #expect(IMAPClient.displayName("INBOX") == "INBOX")
+        #expect(MailOrigin(messageID: "abc.1@mail.de").mailURL?.absoluteString == "message://%3Cabc.1@mail.de%3E")
+        #expect(MailOrigin().mailURL == nil)
+    }
+}

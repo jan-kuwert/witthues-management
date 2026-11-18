@@ -31,6 +31,8 @@ Sie ist für ein MacBook Air M1 mit 8 GB gebaut und läuft komplett auf dem Mac:
 - **Menüleiste:** Status, „Jetzt abrufen“, die fünf neuesten Rechnungen, Einstellungen, Beenden. Neue Rechnungen melden sich mit einer Mitteilung.
 - **Bezahlte Rechnung hinzufügen** (Symbolleiste, ⇧⌘N): für Belege, die nicht per Mail kommen. Zahlungsdatum wählen, dann **Aus Fotos**, **Scannen** (öffnet die Kamera des iPhones über die Continuity-Kamera; iPhone mit derselben Apple-ID in der Nähe) oder **Datei oder Ordner** (PDF, XML, Bilder; bei Ordnern auch alle Unterordner). Fotos werden als einseitiges PDF gespeichert und von der Texterkennung gelesen. Die Rechnung landet direkt im Archivordner. Findet die App kein Rechnungsdatum, nimmt sie das Zahlungsdatum und legt die Rechnung unter „Zu prüfen“.
 - **Ziehen und Ablegen:** PDFs oder XML-Rechnungen aus dem Finder ins Fenster ziehen.
+- **Ältere Mails lesen** (Seitenleiste unter „Mail“ oder ⇧⌘R): Zeitraum (Von/Bis) und beliebige Mailordner wählen, etwa ein Archivordner aus Apple Mail. Die App durchsucht diese Mails noch einmal nach Rechnungen. Schon abgelegte erkennt sie am Dateiinhalt und legt sie nicht doppelt ab. Der normale Abruf läuft danach unverändert weiter.
+- **In Mail öffnen:** Unter „Aus Mail“ neben jeder Rechnung öffnet ein Knopf die ursprüngliche Mail in Apple Mail, um die Quelle zu prüfen. Das klappt, solange die Mail in Apple Mail vorhanden ist.
 - Glas-Look (Liquid Glass von macOS 26), Symbol aus dem „W“ des Witthüs-Logos, alles auf Deutsch.
 
 ## Installieren auf einem anderen Mac (AirDrop)
@@ -68,7 +70,17 @@ Danach liegen in `Witthues/dist/`:
    Alternative im Terminal: `xattr -dr com.apple.quarantine /Applications/Witthüs.app`
 4. Mitteilungen erlauben, wenn macOS fragt. In den Einstellungen der App unter „Abruf“ „Witthüs beim Anmelden starten“ einschalten, damit sie nach jedem Neustart läuft.
 
-**Updates:** Neue `Witthüs.dmg` bauen und die App in „Programme“ ersetzen. Einstellungen, Passwort, Ansichten und die Liste der Rechnungen bleiben erhalten. Sie liegen in `~/Library/Application Support/` und im Schlüsselbund, nicht in der App.
+### Update (alle Daten bleiben erhalten)
+
+Einstellungen, Passwort, Ansichten, Dashboard-Anordnung und die Liste der Rechnungen liegen **nicht in der App**, sondern in `~/Library/Application Support/Witthues/`, im Schlüsselbund und in den App-Einstellungen von macOS. Die Rechnungen selbst liegen im Hauptordner (OneDrive). Ein Update tauscht nur die App aus:
+
+```sh
+cd witthues-management
+git pull
+cd Witthues && ./build-app.sh
+```
+
+Dann auf dem Ziel-Mac Witthüs beenden (Menüleiste → Beenden), die neue `Witthüs.dmg` öffnen und die App nach „Programme“ ziehen → **Ersetzen**. Beim nächsten Start ist alles wie vorher. Wird auf demselben Mac gebaut, reicht `cp -R "dist/Witthüs.app" /Applications/` nach dem Beenden. Nach dem Ersetzen kann macOS einmal wieder „Dennoch öffnen“ verlangen.
 
 **Ohne Warnung beim ersten Start** geht es nur mit einem Apple-Developer-Konto (99 €/Jahr): dann mit einer „Developer ID“ signieren und von Apple notarisieren lassen. Für einen Mac im Büro lohnt sich das nicht.
 

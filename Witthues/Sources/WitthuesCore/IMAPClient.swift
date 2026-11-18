@@ -80,6 +80,42 @@ public actor IMAPClient {
         return uids.filter { afterUID == nil || $0 > afterUID! }.sorted()
     }
 
+    /// UIDs of mails received from the start of `from` to the end of `to`, for reading past mail again.
+    public func uids(from: Date, to: Date) async throws -> [UInt32] {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "d-MMM-yyyy"
+        let dayAfter = Calendar.current.date(byAdding: .day, value: 1, to: max(from, to))!
+        let lines = try await command("UID SEARCH SINCE \(f.string(from: min(from, to))) BEFORE \(f.string(from: dayAfter))")
+        return lines.filter { $0.text.hasPrefix("* SEARCH") }
+            .flatMap { $0.text.dropFirst(8).split(separator: " ").compactMap { UInt32($0) } }
+            .sorted()
+    }
+
+    /// A folder name as people read it: IMAP sends „Entwürfe“ as „Entw&APw-rfe“ (modified UTF-7).
+    public nonisolated static func displayName(_ mailbox: String) -> String {
+        var out = ""
+        var rest = Substring(mailbox)
+        while let amp = rest.firstIndex(of: "&") {
+            out += rest[..<amp]
+            let afterAmp = rest.index(after: amp)
+            guard let dash = rest[afterAmp...].firstIndex(of: "-") else { return out + rest[amp...] }
+            let encoded = rest[afterAmp..<dash]
+            if encoded.isEmpty {
+                out += "&"
+            } else {
+                var b64 = encoded.replacingOccurrences(of: ",", with: "/")
+                b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+                guard let data = Data(base64Encoded: b64), let text = String(data: data, encoding: .utf16BigEndian) else {
+                    return mailbox
+                }
+                out += text
+            }
+            rest = rest[rest.index(after: dash)...]
+        }
+        return out + rest
+    }
+
     /// The full message, without setting the \Seen flag.
     public func fetch(uid: UInt32) async throws -> Data? {
         let lines = try await command("UID FETCH \(uid) (BODY.PEEK[])")

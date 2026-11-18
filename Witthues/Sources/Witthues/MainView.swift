@@ -93,6 +93,7 @@ struct MainView: View {
             }
         }
         .sheet(isPresented: $importingPaid) { PaidImportSheet() }
+        .sheet(isPresented: Binding(get: { model.showingPastMail }, set: { model.showingPastMail = $0 })) { PastMailSheet() }
         .sheet(item: $renaming) { v in
             ViewEditor(title: v.isFolder == true ? "Ordner bearbeiten" : "Ansicht bearbeiten", name: v.name, icon: v.symbol) { name, icon in
                 guard let i = model.library.views.firstIndex(where: { $0.id == v.id }) else { return }
@@ -169,6 +170,11 @@ struct MainView: View {
             }
             Section("Mail") {
                 row(.skipped, "Keine Rechnungen", "tray.and.arrow.down", model.library.skipped.count)
+                Button { model.showingPastMail = true } label: {
+                    Label("Ältere Mails lesen …", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.plain)
+                .help("Mails aus einem Zeitraum und aus beliebigen Mailordnern noch einmal nach Rechnungen durchsuchen (⇧⌘R)")
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 210)
@@ -517,6 +523,15 @@ struct InvoiceDetail: View {
             Text(r.origin.subject).font(.callout)
             Text(r.origin.from).font(.caption).foregroundStyle(.secondary)
             Text(r.origin.attachmentName).font(.caption).foregroundStyle(.secondary)
+            if let url = r.origin.mailURL {
+                Button { NSWorkspace.shared.open(url) } label: {
+                    Label("In Mail öffnen", systemImage: "envelope")
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .padding(.top, 4)
+                .help("Zeigt die Mail mit dieser Rechnung in Apple Mail, um die Quelle zu prüfen")
+            }
         }
     }
 

@@ -14,6 +14,8 @@ final class AppModel {
     var lastCheck: Date?
     var lastResult = ""
     var lastError: String?
+    /// Shows the sheet for reading older mail; set from the menu and the sidebar.
+    var showingPastMail = false
     private var timer: Task<Void, Never>?
 
     init() {
@@ -58,6 +60,28 @@ final class AppModel {
             if summary.filed > 0 { notify(summary.filed == 1 ? "1 neue Rechnung abgelegt" : "\(summary.filed) neue Rechnungen abgelegt") }
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// The account's mail folders, for choosing which ones to read again.
+    func mailboxes() async throws -> [String] {
+        try await MailChecker.testConnection(settings: library.settings,
+                                             password: Keychain.password(for: library.settings.username) ?? "").sorted()
+    }
+
+    /// Reads mails from a date range in the chosen folders again; returns a short German summary.
+    func readPast(mailboxes: [String], from: Date, to: Date) async -> String {
+        guard !isChecking else { return "Es läuft gerade ein Abruf. Bitte kurz warten und erneut versuchen." }
+        isChecking = true
+        defer { isChecking = false; progress = "" }
+        do {
+            let password = Keychain.password(for: library.settings.username) ?? ""
+            let summary = try await MailChecker.readPast(library: library, password: password, mailboxes: mailboxes,
+                                                         from: from, to: to) { [weak self] in self?.progress = $0 }
+            if summary.filed > 0 { notify(summary.filed == 1 ? "1 ältere Rechnung abgelegt" : "\(summary.filed) ältere Rechnungen abgelegt") }
+            return ([summary.pastText] + summary.errors).joined(separator: "\n")
+        } catch {
+            return error.localizedDescription
         }
     }
 

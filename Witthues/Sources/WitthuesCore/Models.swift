@@ -42,6 +42,16 @@ public enum InvoiceStatus: String, Codable, Sendable {
     case unpaid, paid
 }
 
+extension MailOrigin {
+    /// Opens the mail in Apple Mail (message:// with the Message-ID); nil for invoices added by hand.
+    public var mailURL: URL? {
+        guard !messageID.isEmpty,
+              let id = "<\(messageID)>".addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "@.-_+")))
+        else { return nil }
+        return URL(string: "message://" + id)
+    }
+}
+
 /// Where an attachment came from.
 public struct MailOrigin: Codable, Equatable, Sendable {
     public var subject: String
