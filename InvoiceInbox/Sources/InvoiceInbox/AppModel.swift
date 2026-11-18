@@ -1,0 +1,104 @@
+import Foundation
+import InvoiceCore
+import Observation
+import ServiceManagement
+import UserNotifications
+
+/// App state shared by the window, the menu bar item and settings: runs mail checks on launch,
+/// on a timer while the app is open, and when the user asks.
+@MainActor @Observable
+final class AppModel {
+    let library = Library()
+    var isChecking = false
+    var progress = ""
+    var lastCheck: Date?
+    var lastResult = ""
+    var lastError: String?
+    private var timer: Task<Void, Never>?
+
+    init() {
+        restartTimer()
+        if library.settings.checkOnLaunch { checkNow() }
+    }
+
+    var extractor: Extractor { Extractor(useAppleIntelligence: library.settings.useAppleIntelligence) }
+
+    func restartTimer() {
+        timer?.cancel()
+        let minutes = library.settings.checkIntervalMinutes
+        guard minutes > 0 else { return }
+        timer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(minutes * 60))
+                guard !Task.isCancelled else { break }
+                await self?.check()
+            }
+        }
+    }
+
+    func checkNow() {
+        Task { await check() }
+    }
+
+    func check() async {
+        library.refreshFiles()
+        guard !isChecking, library.settings.isMailConfigured, library.settings.isFolderConfigured else {
+            if !library.settings.isMailConfigured || !library.settings.isFolderConfigured {
+                lastError = "Open Settings to choose the main folder and enter the mail account."
+            }
+            return
+        }
+        isChecking = true
+        defer { isChecking = false; progress = ""; lastCheck = Date() }
+        do {
+            let password = Keychain.password(for: library.settings.username) ?? ""
+            let summary = try await MailChecker.check(library: library, password: password) { [weak self] in self?.progress = $0 }
+            lastResult = summary.text
+            lastError = nil
+            if summary.filed > 0 { notify("\(summary.filed) new invoice\(summary.filed == 1 ? "" : "s") filed") }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Files PDFs or e-invoice XMLs dropped on the window, the same way as mail attachments.
+    func importFiles(_ urls: [URL]) async {
+        for url in urls where ["pdf", "xml"].contains(url.pathExtension.lowercased()) {
+            do {
+                let data = try Data(contentsOf: url)
+                _ = try await library.ingest(data: data, fileName: url.lastPathComponent,
+                                             origin: MailOrigin(subject: "Added by hand", attachmentName: url.lastPathComponent),
+                                             extractor: extractor)
+            } catch {
+                lastError = "\(url.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    var unpaidCount: Int { library.records.filter { $0.status == .unpaid }.count }
+
+    // MARK: - Start at login
+
+    var startsAtLogin: Bool {
+        get { SMAppService.mainApp.status == .enabled }
+        set {
+            do {
+                if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            } catch {
+                lastError = "Start at login: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func notify(_ text: String) {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Invoice Inbox"
+            content.body = text
+            center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
+    }
+}

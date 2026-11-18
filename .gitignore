@@ -1,0 +1,7 @@
+.amp/
+.build/
+build/
+*.xcodeproj/xcuserdata/
+.swiftpm/
+dist/
+PROJECTS.md
