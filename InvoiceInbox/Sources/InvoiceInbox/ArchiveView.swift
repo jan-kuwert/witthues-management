@@ -104,6 +104,8 @@ struct ArchiveView: View {
     @State private var sortOrder = [KeyPathComparator(\ArchiveRow.invoiceDate, order: .reverse)]
     @State private var columns: TableColumnCustomization<ArchiveRow> = ArchiveView.loadColumns()
     @State private var naming = false
+    /// The filter rule whose editor is open.
+    @State private var editingRule: FilterRule.ID?
     @State private var newName = ""
 
     init(start: SavedView, viewID: SavedView.ID?, open: @escaping (InvoiceRecord.ID) -> Void,
@@ -256,13 +258,7 @@ struct ArchiveView: View {
         let root = model.library.settings.rootFolder
         var rows = model.library.records.map { ArchiveRow($0, folder: ArchiveFolders.relative($0.filePath, root: root)) }
         if let folder = filter.folder, !folder.isEmpty { rows = rows.filter { $0.folder == folder || $0.folder.hasPrefix(folder + "/") } }
-        switch filter.status {
-        case .all: break
-        case .unpaid: rows = rows.filter { $0.record.status == .unpaid }
-        case .paid: rows = rows.filter { $0.record.status == .paid }
-        }
-        if filter.year != 0 { rows = rows.filter { Calendar.current.component(.year, from: $0.invoiceDate) == filter.year } }
-        if filter.onlyNeedsCheck { rows = rows.filter { !$0.check.isEmpty } }
+        rows = rows.filter { filter.matches($0.record, folder: $0.folder) }
         let q = filter.search.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
             rows = rows.filter { r in
@@ -288,35 +284,123 @@ struct ArchiveView: View {
         Set(model.library.records.compactMap { $0.fields.invoiceDate.map { Calendar.current.component(.year, from: $0) } }).sorted(by: >)
     }
 
+    /// Search field, the Filter menu that adds rules, and the rules as removable badges joined by „und“ or „oder“.
     private var filterBar: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Filtern", text: $filter.search).textFieldStyle(.plain)
+                TextField("Suchen", text: $filter.search).textFieldStyle(.plain)
                 if !filter.search.isEmpty {
                     Button { filter.search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
-            .frame(minWidth: 90, maxWidth: 300)
-            .help("Nach Dateiname, Firma, Rechnungsnummer oder Betrag filtern")
+            .frame(minWidth: 90, maxWidth: 260)
+            .help("Nach Dateiname, Firma, Rechnungsnummer oder Betrag suchen")
             .glassEffect(.regular, in: .capsule)
-            Picker("Status", selection: $filter.status) {
-                ForEach(SavedView.Status.allCases, id: \.self) { Text($0.label).tag($0) }
+            filterMenu
+            // Badges wrap onto further lines when there are many.
+            FlowLayout(spacing: 6) {
+                ForEach(Array(filter.rules.enumerated()), id: \.element.id) { i, rule in
+                    if i > 0 { joinButton }
+                    ruleBadge(rule)
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            Picker("Jahr", selection: $filter.year) {
-                Text("Alle Jahre").tag(0)
-                ForEach(years, id: \.self) { Text(String($0)).tag($0) }
-            }
-            .labelsHidden()
-            .fixedSize()
-            Toggle("Zu prüfen", isOn: $filter.onlyNeedsCheck).toggleStyle(.button).fixedSize()
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Section("Filterregel hinzufügen") {
+                ForEach(FilterRule.Field.allCases, id: \.self) { f in
+                    Button { addRule(f) } label: { Label(f.label, systemImage: f.symbol) }
+                }
+            }
+            if filter.rules.count > 1 {
+                Picker("Regeln verknüpfen", selection: $filter.matchAny) {
+                    Text("Alle Regeln müssen passen (und)").tag(false)
+                    Text("Mindestens eine Regel passt (oder)").tag(true)
+                }
+            }
+            if !filter.rules.isEmpty {
+                Divider()
+                Button("Alle Filter entfernen") { editingRule = nil; filter.rules = [] }
+            }
+        } label: {
+            Label(filter.rules.isEmpty ? "Filter" : "Filter (\(filter.rules.count))",
+                  systemImage: filter.rules.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                .labelStyle(.titleAndIcon)
+        }
+        .fixedSize()
+        .help("Filterregel hinzufügen")
+    }
+
+    /// Switches all rules between „und“ and „oder“.
+    private var joinButton: some View {
+        Button(filter.matchAny ? "oder" : "und") { filter.matchAny.toggle() }
+            .buttonStyle(.plain)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(.quaternary, in: .capsule)
+            .help("Klicken wechselt zwischen „und“ (alle Regeln müssen passen) und „oder“ (eine Regel reicht)")
+    }
+
+    private func ruleBadge(_ rule: FilterRule) -> some View {
+        let excluded = rule.op.isNegative
+        let tint: Color = excluded ? .red : .accentColor
+        return HStack(spacing: 5) {
+            Button { editingRule = rule.id } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: excluded ? "minus.circle" : rule.field.symbol)
+                    Text(rule.field.label).fontWeight(.semibold)
+                    Text(rule.summary)
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help("Klicken zum Bearbeiten")
+            Button { removeRule(rule.id) } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Filter entfernen")
+        }
+        .font(.callout)
+        .lineLimit(1)
+        .foregroundStyle(rule.isComplete ? .primary : .secondary)
+        .padding(.leading, 10).padding(.trailing, 6).padding(.vertical, 4)
+        .background(tint.opacity(rule.isComplete ? 0.16 : 0.06), in: .capsule)
+        .overlay(Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 1))
+        .popover(isPresented: Binding(get: { editingRule == rule.id }, set: { if !$0 { editingRule = nil } }), arrowEdge: .bottom) {
+            RuleEditor(rule: ruleBinding(rule.id), years: years)
+        }
+        .contextMenu {
+            Button("Bearbeiten …") { editingRule = rule.id }
+            if let n = rule.op.negated, rule.field.kind != .flag {
+                Button(excluded ? "Einschließen" : "Ausschließen") { ruleBinding(rule.id).wrappedValue.op = n }
+            }
+            Divider()
+            Button("Filter entfernen") { removeRule(rule.id) }
+        }
+    }
+
+    private func ruleBinding(_ id: FilterRule.ID) -> Binding<FilterRule> {
+        Binding(get: { filter.rules.first { $0.id == id } ?? FilterRule(.company) },
+                set: { new in if let i = filter.rules.firstIndex(where: { $0.id == id }) { filter.rules[i] = new } })
+    }
+
+    private func addRule(_ field: FilterRule.Field) {
+        let r = FilterRule(field)
+        filter.rules.append(r)
+        // Rules that need a value open their editor; a „Zu prüfen“ rule is complete as added.
+        if field.kind != .flag { DispatchQueue.main.async { editingRule = r.id } }
+    }
+
+    private func removeRule(_ id: FilterRule.ID) {
+        if editingRule == id { editingRule = nil }
+        filter.rules.removeAll { $0.id == id }
     }
 
     /// Save the filters as a view, update or revert the open view, or open another one.
@@ -605,5 +689,110 @@ struct ViewEditor: View {
         }
         .padding(20)
         .frame(width: 380)
+    }
+}
+
+/// Edits one filter rule: condition, value and whether it excludes.
+struct RuleEditor: View {
+    @Binding var rule: FilterRule
+    let years: [Int]
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var valueFocused: Bool
+
+    private var usesDay: Bool { rule.op == .before || rule.op == .after }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(rule.field.label, systemImage: rule.field.symbol).font(.headline)
+            Picker("Bedingung", selection: $rule.op) {
+                ForEach(rule.field.ops, id: \.self) { Text($0.label(for: rule.field)).tag($0) }
+            }
+            .labelsHidden()
+            switch rule.field.kind {
+            case .text:
+                TextField("Text", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
+            case .number:
+                TextField("Betrag, z. B. 100 oder 49,90", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
+            case .date:
+                if usesDay {
+                    DatePicker("Datum", selection: Binding(get: { FilterRule.date(from: rule.value) ?? Date() },
+                                                           set: { rule.value = FilterRule.dayString($0) }),
+                               displayedComponents: .date)
+                        .labelsHidden()
+                } else {
+                    TextField("Jahr oder Monat, z. B. 2026 oder 2026-03", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
+                    if !years.isEmpty {
+                        HStack {
+                            ForEach(Array(years.prefix(4)), id: \.self) { y in
+                                Button(String(y)) { rule.value = String(y) }.controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            case .status:
+                Picker("Status", selection: $rule.value) {
+                    Text("Offen").tag(InvoiceStatus.unpaid.rawValue)
+                    Text("Bezahlt").tag(InvoiceStatus.paid.rawValue)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            case .source:
+                Picker("Gelesen aus", selection: $rule.value) {
+                    ForEach(ExtractionSource.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+                }
+                .labelsHidden()
+            case .flag:
+                EmptyView()
+            }
+            if let n = rule.op.negated, rule.field.kind != .flag {
+                Toggle("Ausschließen", isOn: Binding(get: { rule.op.isNegative }, set: { if $0 != rule.op.isNegative { rule.op = n } }))
+                    .help("Rechnungen, auf die das zutrifft, ausblenden")
+            }
+        }
+        .padding(14)
+        .frame(width: 290)
+        // Typing goes straight into the value.
+        .onAppear { DispatchQueue.main.async { valueFocused = true } }
+        .onChange(of: rule.op) {
+            // „vor“ / „nach“ need a full day; keep the value usable when switching.
+            if rule.field.kind == .date, usesDay, FilterRule.date(from: rule.value) == nil { rule.value = FilterRule.dayString(Date()) }
+        }
+    }
+}
+
+/// Lays out views left to right and wraps to a new line when the width runs out.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    private func rows(_ subviews: Subviews, width: CGFloat) -> [[(Int, CGSize)]] {
+        var rows: [[(Int, CGSize)]] = [[]]
+        var x: CGFloat = 0
+        for (i, v) in subviews.enumerated() {
+            let size = v.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { rows.append([]); x = 0 }
+            rows[rows.count - 1].append((i, size))
+            x += size.width + spacing
+        }
+        return rows
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let r = rows(subviews, width: width)
+        let height = r.reduce(0) { $0 + ($1.map(\.1.height).max() ?? 0) } + spacing * CGFloat(max(r.count - 1, 0))
+        let used = r.map { row in row.reduce(0) { $0 + $1.1.width } + spacing * CGFloat(max(row.count - 1, 0)) }.max() ?? 0
+        return CGSize(width: width.isFinite ? width : used, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(subviews, width: bounds.width) {
+            let h = row.map(\.1.height).max() ?? 0
+            var x = bounds.minX
+            for (i, size) in row {
+                subviews[i].place(at: CGPoint(x: x, y: y + (h - size.height) / 2), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += h + spacing
+        }
     }
 }

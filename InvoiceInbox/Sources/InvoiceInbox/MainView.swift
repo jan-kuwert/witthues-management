@@ -127,9 +127,10 @@ struct MainView: View {
                 // Starred folders, with the name and icon they were given.
                 ForEach(model.library.views.filter { $0.isFolder == true && $0.starred }) { v in
                     Label(v.name, systemImage: v.symbol)
+                        .removableByCommandDrag(v.id, drag)
+                        // The tag must come after the drag modifiers, or the row can no longer be selected.
                         .tag(SidebarItem.view(v.id))
                         .help((v.folder ?? "") + "\n⌘ und aus der Seitenleiste ziehen zum Entfernen")
-                        .removableByCommandDrag(v.id, drag)
                         .contextMenu {
                             Button("Bearbeiten …") { renaming = v }
                             Button("Im Finder zeigen") {
@@ -145,9 +146,9 @@ struct MainView: View {
                 Section("Ansichten") {
                     ForEach(starred) { v in
                         Label(v.name, systemImage: v.symbol)
+                            .removableByCommandDrag(v.id, drag)
                             .tag(SidebarItem.view(v.id))
                             .help("⌘ und aus der Seitenleiste ziehen zum Entfernen")
-                            .removableByCommandDrag(v.id, drag)
                             .contextMenu {
                                 Button("Bearbeiten …") { renaming = v }
                                 Button("Stern entfernen") { setStar(v.id, false) }

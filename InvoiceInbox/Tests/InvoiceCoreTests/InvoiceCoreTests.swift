@@ -142,7 +142,8 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(!FileManager.default.fileExists(atPath: r.filePath))
 
         // Records and saved views survive a restart.
-        lib.views = [SavedView(name: "Paid 2026", folder: "Archiv", status: .paid, year: 2026, icon: "eurosign.circle"),
+        lib.views = [SavedView(name: "Paid 2026", folder: "Archiv", rules: [FilterRule(.status, .equals, "paid"), FilterRule(.invoiceDate, .equals, "2026")],
+                               matchAny: true, icon: "eurosign.circle"),
                      SavedView(name: "2026-05", folder: "Archiv/2026-05", icon: "folder", isFolder: true)]
         let reopened = Library(directory: tmp.appendingPathComponent("data"))
         #expect(reopened.views == lib.views)
@@ -159,5 +160,42 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         guard case .skipped = outcome else { Issue.record("expected skipped, got \(outcome)"); return }
         #expect(lib.records.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: tmp.appendingPathComponent("root/00 Offen").path))
+    }
+}
+
+@Suite struct FilterRuleTests {
+    private func record(_ seller: String, total: String?, status: InvoiceStatus, date: Date) -> InvoiceRecord {
+        InvoiceRecord(fields: InvoiceFields(seller: seller, invoiceDate: date, total: total.flatMap { Decimal(string: $0) }),
+                      source: .textRules, reviewReasons: [], status: status, filePath: "/x/\(seller).pdf", origin: MailOrigin(), sha256: seller)
+    }
+
+    @Test func andOrAndExclusion() {
+        let telekom = record("Telekom Deutschland", total: "72.96", status: .paid, date: day(2026, 1, 13))
+        let herder = record("Herder", total: "250", status: .unpaid, date: day(2025, 3, 20))
+        let noAmount = record("Hassler", total: nil, status: .unpaid, date: day(2026, 3, 1))
+        let all = [telekom, herder, noAmount]
+        func names(_ v: SavedView) -> [String] { all.filter { v.matches($0, folder: "") }.map(\.fields.seller) }
+
+        let paidAnd2026 = SavedView(rules: [FilterRule(.status, .equals, "paid"), FilterRule(.invoiceDate, .equals, "2026")])
+        #expect(names(paidAnd2026) == ["Telekom Deutschland"])
+        var either = paidAnd2026
+        either.matchAny = true
+        #expect(names(either) == ["Telekom Deutschland", "Hassler"])
+        // Exclusion is case-insensitive; a rule still being typed changes nothing.
+        #expect(names(SavedView(rules: [FilterRule(.company, .notContains, "telekom"), FilterRule(.company, .contains, " ")])) == ["Herder", "Hassler"])
+        // German amounts; an invoice without an amount is neither bigger nor smaller.
+        #expect(names(SavedView(rules: [FilterRule(.amount, .greater, "72,95")])) == ["Telekom Deutschland", "Herder"])
+        #expect(names(SavedView(rules: [FilterRule(.amount, .less, "100")])) == ["Telekom Deutschland"])
+        #expect(names(SavedView(rules: [FilterRule(.invoiceDate, .before, "2026-01-13")])) == ["Herder"])
+        #expect(names(SavedView(rules: [FilterRule(.invoiceDate, .equals, "2026-03")])) == ["Hassler"])
+    }
+
+    @Test func viewsFromBeforeRulesStillLoad() throws {
+        let json = #"[{"id":"B8AD9A88-ED55-4AB3-900B-ED7A6385FE3C","name":"Bezahlt 2026","starred":true,"status":"Paid","year":2026,"onlyNeedsCheck":true,"search":""}]"#
+        let v = try #require(try JSONDecoder().decode([SavedView].self, from: Data(json.utf8)).first)
+        #expect(v.name == "Bezahlt 2026")
+        #expect(v.rules.map(\.field) == [.status, .invoiceDate, .needsCheck])
+        #expect(v.rules.map(\.value) == ["paid", "2026", "true"])
+        #expect(!v.matchAny)
     }
 }
