@@ -391,11 +391,14 @@ struct DashboardView: View {
         return sums.values.sorted { $0.date < $1.date }
     }
 
+    /// The six biggest suppliers; the rest are summed up as „Andere“ so the pie adds up to the total.
     private var topCompanies: [NamedValue] {
-        Dictionary(grouping: countable) { $0.fields.seller.isEmpty ? "Unbekannt" : $0.fields.seller }
+        let all = Dictionary(grouping: countable) { $0.fields.seller.isEmpty ? "Unbekannt" : $0.fields.seller }
             .map { NamedValue(name: $0.key, value: sum($0.value)) }
+            .filter { $0.value > 0 }
             .sorted { $0.value > $1.value }
-            .prefix(8).map { $0 }
+        guard all.count > 7 else { return all }
+        return Array(all.prefix(6)) + [NamedValue(name: "Andere", value: all.dropFirst(6).reduce(0) { $0 + $1.value })]
     }
 
     private var sources: [NamedValue] {
@@ -479,17 +482,45 @@ struct DashboardView: View {
         .overlay { if data.isEmpty { Text("Keine Rechnungen im Zeitraum").foregroundStyle(.secondary) } }
     }
 
+    private static let palette: [Color] = [.blue, .orange, .green, .purple, .pink, .teal, .gray]
+
     private var companiesChart: some View {
         let data = topCompanies
-        return Chart(data) { c in
-            BarMark(x: .value("Betrag", c.value), y: .value("Firma", c.name))
-                .foregroundStyle(Color.accentColor.gradient)
-                .cornerRadius(4)
-                .annotation(position: .trailing) { Text(money(c.value)).font(.caption).foregroundStyle(.secondary) }
+        let total = data.reduce(0) { $0 + $1.value }
+        let colors = Array(Self.palette.prefix(data.count))
+        return HStack(alignment: .center, spacing: 20) {
+            Chart(data) { c in
+                SectorMark(angle: .value("Betrag", c.value), innerRadius: .ratio(0.55), angularInset: 2)
+                    .foregroundStyle(by: .value("Firma", c.name))
+                    .cornerRadius(4)
+            }
+            .chartForegroundStyleScale(domain: data.map(\.name), range: colors)
+            .chartLegend(.hidden)
+            .chartBackground { _ in
+                VStack(spacing: 0) {
+                    Text(money(total)).font(.headline).monospacedDigit().lineLimit(1).minimumScaleFactor(0.5)
+                    Text("gesamt").font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 36)
+            }
+            .frame(width: 200, height: 200)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(data.enumerated()), id: \.element.id) { i, c in
+                    HStack(spacing: 8) {
+                        Circle().fill(colors[i]).frame(width: 9, height: 9)
+                        Text(c.name).lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(money(c.value)).monospacedDigit().foregroundStyle(.secondary)
+                        Text((c.value / total).formatted(.percent.precision(.fractionLength(0))))
+                            .monospacedDigit().foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
+                    }
+                    .font(.callout)
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
-        .chartXAxis(.hidden)
+        .frame(maxWidth: .infinity, minHeight: 200)
         .overlay { if data.isEmpty { Text("Keine Rechnungen im Zeitraum").foregroundStyle(.secondary) } }
-        .frame(height: CGFloat(max(data.count, 1)) * 34 + 10)
     }
 
     private var sourcesChart: some View {
