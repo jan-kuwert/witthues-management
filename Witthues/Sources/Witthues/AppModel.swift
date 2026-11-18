@@ -1,5 +1,5 @@
 import Foundation
-import InvoiceCore
+import WitthuesCore
 import Observation
 import ServiceManagement
 import UserNotifications

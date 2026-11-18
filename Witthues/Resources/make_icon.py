@@ -1,4 +1,4 @@
-# Builds InvoiceInbox/Resources/AppIcon.svg from the Witthüs logo's W mark.
+# Builds Witthues/Resources/AppIcon.svg from the Witthüs logo's W mark.
 # Usage: python3 Resources/make_icon.py <Witthüs-Logo.svg> Resources/AppIcon.svg 4.6   (add "preview" to simulate the macOS mask)
 import re, sys
 src = open(sys.argv[1]).read()

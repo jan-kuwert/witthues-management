@@ -12,7 +12,7 @@ Sie ist für ein MacBook Air M1 mit 8 GB gebaut und läuft komplett auf dem Mac:
 - [Automatisch oder per Knopf abrufen?](#automatisch-oder-per-knopf-abrufen)
 - [Wie Rechnungen gelesen werden](#wie-rechnungen-gelesen-werden)
 - [Entwickeln](#entwickeln)
-- [Offene Fragen und Ideen](#offene-fragen-und-ideen)
+- [Entscheidungen, offene Fragen und Ideen](#entscheidungen-offene-fragen-und-ideen)
 
 ## Was die App macht
 
@@ -42,11 +42,11 @@ Einmalig Xcode 26 oder neuer aus dem App Store installieren und einmal öffnen, 
 
 ```sh
 git clone https://github.com/jan-kuwert/witthues-management.git
-cd witthues-management/InvoiceInbox
+cd witthues-management/Witthues
 ./build-app.sh
 ```
 
-Danach liegen in `InvoiceInbox/dist/`:
+Danach liegen in `Witthues/dist/`:
 
 - `Witthüs.app`: die App selbst
 - `Witthüs.dmg`: die App plus eine Verknüpfung zu „Programme“. Diese Datei verschickt man.
@@ -81,13 +81,13 @@ Einstellungen öffnen (⌘,).
 - Ordner und Dateiname sind Vorlagen mit Variablen. „Ordner wählen …“ kann auch neue Ordner anlegen. Eine Vorschau zeigt, wo eine neue Rechnung landet und wohin sie nach dem Bezahlen wandert.
 - Es gibt drei Vorlagen: den Ordner für offene Rechnungen, den Archivordner für bezahlte Rechnungen und den Dateinamen. `/` in einer Vorlage erzeugt Unterordner, zum Beispiel `{yyyy}/{mm}` für einen Ordner pro Jahr mit Monatsordnern darin.
 
-Der Dateiname ist standardmäßig `{yy}-{mm}-{dd} {customer} {invoice}`, also etwa `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf`.
+Der Dateiname ist standardmäßig `{yy}-{mm}-{dd} {company} {invoice}`, also etwa `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf`.
 
 | Variable | Bedeutung |
 |---|---|
 | `{yyyy}` `{yy}` `{mm}` `{dd}` | Rechnungsdatum (2026, 26, 03, 07) |
 | `{paid_yyyy}` `{paid_mm}` `{paid_dd}` | Zahlungsdatum |
-| `{customer}` / `{seller}` | Firma, die die Rechnung geschickt hat, ohne „GmbH“ usw. |
+| `{company}` | Firma, die die Rechnung geschickt hat, ohne „GmbH“ usw. (früher `{customer}`, das weiterhin funktioniert) |
 | `{buyer}` | Empfänger der Rechnung |
 | `{invoice}` | Rechnungsnummer |
 | `{total}` `{currency}` | Bruttobetrag, Währung |
@@ -136,32 +136,35 @@ Es kommen Rechnungen aus Deutschland und aus dem Ausland, viele ohne eingebettet
 
 ## Entwickeln
 
-Swift-Paket in `InvoiceInbox/`:
+Swift-Paket in `Witthues/`:
 
 | Ziel | Inhalt |
 |---|---|
-| `InvoiceCore` | IMAP-Client, MIME, E-Rechnung (CII/UBL), Textregeln, Extraktion (Vision + Foundation Models), Vorlagen, Ablage, Bibliothek, Einstellungen/Schlüsselbund |
-| `InvoiceInbox` | Die SwiftUI-App (Übersicht, Rechnungen, Archiv, Ansichten, Einstellungen, Menüleiste) |
-| `invoice-cli` | Kommandozeile zum Testen der Extraktion |
-| `InvoiceCoreTests` | Tests |
+| `WitthuesCore` | IMAP-Client, MIME, E-Rechnung (CII/UBL), Textregeln, Extraktion (Vision + Foundation Models), Vorlagen, Ablage, Bibliothek, Einstellungen/Schlüsselbund |
+| `Witthues` | Die SwiftUI-App (Übersicht, Rechnungen, Archiv, Ansichten, Einstellungen, Menüleiste) |
+| `witthues-cli` | Kommandozeile zum Testen der Extraktion |
+| `WitthuesCoreTests` | Tests |
 
 ```sh
-cd InvoiceInbox
+cd Witthues
 swift test                                      # Tests
-swift run invoice-cli extract rechnung.pdf      # zeigt, was gelesen wird und den Dateinamen
+swift run witthues-cli extract rechnung.pdf      # zeigt, was gelesen wird und den Dateinamen
 ./build-app.sh                                  # dist/Witthüs.app und dist/Witthüs.dmg
 ```
 
-- Daten (Rechnungsliste, Ansichten, Abrufstand) liegen als JSON in `~/Library/Application Support/`. Mit `INVOICE_INBOX_HOME=/pfad` lässt sich ein anderer Ordner nutzen, etwa für Demodaten: `open --env INVOICE_INBOX_HOME=$HOME/InvoiceInboxDemo dist/Witthüs.app`.
+- Daten (Rechnungsliste, Ansichten, Abrufstand) liegen als JSON in `~/Library/Application Support/`. Mit `WITTHUES_HOME=/pfad` lässt sich ein anderer Ordner nutzen, etwa für Demodaten: `open --env WITTHUES_HOME=$HOME/WitthuesDemo dist/Witthüs.app`.
 - Das App-Symbol wird mit `Resources/make_icon.py` aus dem Logo erzeugt.
 - Echte Rechnungen nie ins Repository legen.
 
-## Offene Fragen und Ideen
+## Entscheidungen, offene Fragen und Ideen
 
-Offene Fragen:
+Entschieden:
 
-- **Archivmonat:** Kommt eine bezahlte Rechnung in den Ordner für den Monat der Rechnung (`{yyyy}`, `{mm}`) oder den Monat der Zahlung (`{paid_yyyy}`, `{paid_mm}`)? Das lässt sich in den Einstellungen ändern.
-- **`{customer}`:** Ist das die Firma, die die Rechnung schickt? So ist es eingebaut.
+- **Archivmonat:** Bezahlte Rechnungen kommen in den Ordner für den Monat der Rechnung (`{yyyy}`, `{mm}`), nicht den Monat der Zahlung. Wer es anders will, nimmt `{paid_yyyy}` und `{paid_mm}`.
+- **`{company}`:** die Firma, die die Rechnung schickt.
+
+Offene Frage:
+
 - **Datum im Dateinamen:** Es wird das Rechnungsdatum verwendet. Einige der Beispieldateien waren anders benannt.
 
 Noch auf dem echten M1 zu testen: Telekom-Anmeldung, Apple Intelligence, Texterkennung bei Scans und Fotos.

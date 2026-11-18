@@ -1,9 +1,9 @@
 import Foundation
-import InvoiceCore
+import WitthuesCore
 
-// invoice-cli extract <file.pdf|file.xml|mail.eml>...   prints what the app would extract and the file name it would use
-// invoice-cli import <files…>                            files them like mail attachments (set INVOICE_INBOX_HOME for a demo library)
-// invoice-cli check                                      runs one mail check with the app's saved settings
+// witthues-cli extract <file.pdf|file.xml|mail.eml>...   prints what the app would extract and the file name it would use
+// witthues-cli import <files…>                            files them like mail attachments (set WITTHUES_HOME for a demo library)
+// witthues-cli check                                      runs one mail check with the app's saved settings
 
 let args = Array(CommandLine.arguments.dropFirst())
 let organizer = FileOrganizer(settings: AppSettings())
@@ -63,5 +63,5 @@ case "import":
 case "check":
     print(try await checkMail().text)
 default:
-    print("usage: invoice-cli extract <files…> | invoice-cli import <files…> | invoice-cli check")
+    print("usage: witthues-cli extract <files…> | witthues-cli import <files…> | witthues-cli check")
 }

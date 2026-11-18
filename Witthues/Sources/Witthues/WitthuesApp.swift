@@ -1,9 +1,9 @@
 import AppKit
-import InvoiceCore
+import WitthuesCore
 import SwiftUI
 
 @main
-struct InvoiceInboxApp: App {
+struct WitthuesApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {

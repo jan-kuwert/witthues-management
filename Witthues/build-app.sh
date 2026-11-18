@@ -4,13 +4,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release --product InvoiceInbox
-BIN="$(swift build -c release --show-bin-path)/InvoiceInbox"
+swift build -c release --product Witthues
+BIN="$(swift build -c release --show-bin-path)/Witthues"
 
 APP="dist/Witthüs.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/InvoiceInbox"
+cp "$BIN" "$APP/Contents/MacOS/Witthues"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
 # App icon: render the SVG at every size macOS wants, then pack it into an .icns.

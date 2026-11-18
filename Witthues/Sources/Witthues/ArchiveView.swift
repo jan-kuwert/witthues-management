@@ -1,4 +1,4 @@
-import InvoiceCore
+import WitthuesCore
 import SwiftUI
 
 /// One table row: an invoice flattened into sortable values.

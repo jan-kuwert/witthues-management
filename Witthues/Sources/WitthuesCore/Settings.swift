@@ -6,7 +6,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var rootFolder = ""
     public var unpaidFolder = "00 Offen"
     public var paidFolder = "{yyyy}-{mm}"
-    public var fileName = "{yy}-{mm}-{dd} {customer} {invoice}"
+    public var fileName = "{yy}-{mm}-{dd} {company} {invoice}"
 
     public var imapHost = "secureimap.t-online.de"
     public var imapPort = 993
@@ -22,6 +22,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init() {}
 
+    /// Replaces earlier variable names such as {customer} with {company} in all templates.
+    public mutating func migrateTemplates() {
+        unpaidFolder = PathTemplate.migrated(unpaidFolder)
+        paidFolder = PathTemplate.migrated(paidFolder)
+        fileName = PathTemplate.migrated(fileName)
+    }
+
     public var isMailConfigured: Bool { !imapHost.isEmpty && !username.isEmpty }
     public var isFolderConfigured: Bool { !rootFolder.isEmpty }
 
@@ -34,7 +41,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
 /// The mailbox password, kept in the login keychain.
 public enum Keychain {
-    static let service = "InvoiceInbox IMAP"
+    static let service = "Witthues IMAP"
 
     public static func password(for account: String) -> String? {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,

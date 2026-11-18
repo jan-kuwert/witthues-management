@@ -1,5 +1,5 @@
 import AppKit
-import InvoiceCore
+import WitthuesCore
 import SwiftUI
 
 struct SettingsView: View {

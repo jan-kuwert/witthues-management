@@ -1,5 +1,5 @@
 import Charts
-import InvoiceCore
+import WitthuesCore
 import SwiftUI
 
 /// Overview of all filed invoices: totals, monthly amounts, top companies, open invoices.

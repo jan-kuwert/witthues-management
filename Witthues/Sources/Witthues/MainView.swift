@@ -1,4 +1,4 @@
-import InvoiceCore
+import WitthuesCore
 import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers

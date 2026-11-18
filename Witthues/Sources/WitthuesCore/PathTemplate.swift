@@ -3,8 +3,8 @@ import Foundation
 /// Fills `{variable}` placeholders in folder and file name templates.
 ///
 /// Variables: {yyyy} {yy} {mm} {dd} from the invoice date, {paid_yyyy} {paid_yy} {paid_mm} {paid_dd}
-/// from the payment date, {seller} {buyer} {customer} (= seller, the company that sent the invoice),
-/// {invoice} (invoice number), {total}, {currency}.
+/// from the payment date, {company} (the company that sent the invoice), {buyer},
+/// {invoice} (invoice number), {total}, {currency}. {customer} and {seller} are older names for {company}.
 public enum PathTemplate {
     public static let variables: [(name: String, help: String)] = [
         ("{yyyy}", "Rechnungsjahr, 2026"),
@@ -14,13 +14,20 @@ public enum PathTemplate {
         ("{paid_yyyy}", "Jahr, in dem bezahlt wurde"),
         ("{paid_mm}", "Monat, in dem bezahlt wurde"),
         ("{paid_dd}", "Tag, an dem bezahlt wurde"),
-        ("{customer}", "Firma, die die Rechnung geschickt hat (wie {seller})"),
-        ("{seller}", "Firma, die die Rechnung geschickt hat"),
+        ("{company}", "Firma, die die Rechnung geschickt hat, ohne „GmbH“ usw."),
         ("{buyer}", "Empfänger der Rechnung"),
         ("{invoice}", "Rechnungsnummer"),
         ("{total}", "Bruttobetrag, 119.00"),
         ("{currency}", "Währung, EUR"),
     ]
+
+    /// Earlier names for {company}, still filled in so old templates keep working.
+    static let legacyNames = ["{customer}": "{company}", "{seller}": "{company}"]
+
+    /// The template with earlier variable names replaced by the current ones.
+    public static func migrated(_ template: String) -> String {
+        legacyNames.reduce(template) { $0.replacingOccurrences(of: $1.key, with: $1.value, options: .caseInsensitive) }
+    }
 
     public static func render(_ template: String, fields: InvoiceFields, paidDate: Date? = nil,
                               calendar: Calendar = .current) -> String {
@@ -39,8 +46,9 @@ public enum PathTemplate {
         addDate(fields.invoiceDate, prefix: "")
         addDate(paidDate, prefix: "paid_")
         let seller = cleanName(fields.seller)
-        values["seller"] = seller.isEmpty ? "Unbekannt" : seller
-        values["customer"] = values["seller"]
+        values["company"] = seller.isEmpty ? "Unbekannt" : seller
+        values["customer"] = values["company"]
+        values["seller"] = values["company"]
         values["buyer"] = cleanName(fields.buyer)
         values["invoice"] = fields.invoiceNumber.isEmpty ? "ohne-Nummer" : fields.invoiceNumber
         values["total"] = fields.total.map { String(format: "%.2f", NSDecimalNumber(decimal: $0).doubleValue) } ?? ""
@@ -65,7 +73,7 @@ public enum PathTemplate {
 
     /// Unknown `{names}` in a template, so the settings screen can warn about typos.
     public static func unknownVariables(in template: String) -> [String] {
-        let known = Set(variables.map { $0.name.lowercased() })
+        let known = Set(variables.map { $0.name.lowercased() }).union(legacyNames.keys)
         var unknown: [String] = []
         var rest = Substring(template)
         while let open = rest.firstIndex(of: "{"), let close = rest[open...].firstIndex(of: "}") {

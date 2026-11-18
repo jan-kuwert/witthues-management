@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import InvoiceCore
+@testable import WitthuesCore
 
 private func fixture(_ name: String) throws -> Data {
     let url = try #require(Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Fixtures"))
@@ -14,10 +14,13 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
 @Suite struct TemplateTests {
     @Test func janFileNameAndFolders() {
         let f = InvoiceFields(seller: "Telekom Deutschland GmbH", invoiceNumber: "RE/2026/0815", invoiceDate: day(2026, 3, 7))
-        #expect(PathTemplate.render("{yy}-{mm}-{dd} {customer} {invoice}", fields: f) == "26-03-07 Telekom Deutschland RE-2026-0815")
+        #expect(PathTemplate.render("{yy}-{mm}-{dd} {company} {invoice}", fields: f) == "26-03-07 Telekom Deutschland RE-2026-0815")
+        // Templates saved with the old name still work and are rewritten to {company}.
+        #expect(PathTemplate.render("{customer}", fields: f) == "Telekom Deutschland")
+        #expect(PathTemplate.migrated("{yy} {Customer} {seller}") == "{yy} {company} {company}")
         // The archive month comes from the payment date, not the invoice date.
         #expect(PathTemplate.render("{paid_yyyy}-{paid_mm}", fields: f, paidDate: day(2026, 5, 2)) == "2026-05")
-        #expect(PathTemplate.unknownVariables(in: "{yyyy}-{month} {customer}") == ["{month}"])
+        #expect(PathTemplate.unknownVariables(in: "{yyyy}-{month} {company} {customer}") == ["{month}"])
     }
 }
 
@@ -145,7 +148,10 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         lib.views = [SavedView(name: "Paid 2026", folder: "Archiv", rules: [FilterRule(.status, .equals, "paid"), FilterRule(.invoiceDate, .equals, "2026")],
                                matchAny: true, icon: "eurosign.circle"),
                      SavedView(name: "2026-05", folder: "Archiv/2026-05", icon: "folder", isFolder: true)]
+        // Templates saved with the old {customer} name come back as {company}.
+        lib.settings.fileName = "{yy} {customer} {invoice}"
         let reopened = Library(directory: tmp.appendingPathComponent("data"))
+        #expect(reopened.settings.fileName == "{yy} {company} {invoice}")
         #expect(reopened.views == lib.views)
         #expect(reopened.settings.paidFolder == "Archiv/{paid_yyyy}-{paid_mm}")
         #expect(reopened.records.first?.status == .paid)

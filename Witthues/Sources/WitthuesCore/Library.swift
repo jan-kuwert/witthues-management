@@ -20,18 +20,20 @@ public final class Library {
         var cursors: [String: MailboxCursor]
     }
 
-    /// `INVOICE_INBOX_HOME` overrides the data folder, for tests and demos.
+    /// `WITTHUES_HOME` overrides the data folder, for tests and demos.
     public nonisolated static var defaultDirectory: URL {
-        if let custom = ProcessInfo.processInfo.environment["INVOICE_INBOX_HOME"] { return URL(fileURLWithPath: custom) }
+        if let custom = ProcessInfo.processInfo.environment["WITTHUES_HOME"] { return URL(fileURLWithPath: custom) }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("InvoiceInbox", isDirectory: true)
+            .appendingPathComponent("Witthues", isDirectory: true)
     }
 
     public init(directory: URL = Library.defaultDirectory) {
         self.directory = directory
         try? FileManager.default.createDirectory(at: directory.appendingPathComponent("Skipped"), withIntermediateDirectories: true)
         let decoder = JSONDecoder()
-        settings = (try? decoder.decode(AppSettings.self, from: Data(contentsOf: directory.appendingPathComponent("settings.json")))) ?? AppSettings()
+        var loaded = (try? decoder.decode(AppSettings.self, from: Data(contentsOf: directory.appendingPathComponent("settings.json")))) ?? AppSettings()
+        loaded.migrateTemplates()
+        settings = loaded
         views = (try? decoder.decode([SavedView].self, from: Data(contentsOf: directory.appendingPathComponent("views.json")))) ?? []
         if let stored = try? decoder.decode(Stored.self, from: Data(contentsOf: directory.appendingPathComponent("library.json"))) {
             records = stored.records

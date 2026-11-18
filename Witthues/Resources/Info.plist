@@ -6,8 +6,8 @@
 	<key>CFBundleDisplayName</key><string>Witthüs</string>
 	<key>CFBundleDevelopmentRegion</key><string>de</string>
 	<key>CFBundleLocalizations</key><array><string>de</string></array>
-	<key>CFBundleIdentifier</key><string>de.witthues.InvoiceInbox</string>
-	<key>CFBundleExecutable</key><string>InvoiceInbox</string>
+	<key>CFBundleIdentifier</key><string>de.witthues.app</string>
+	<key>CFBundleExecutable</key><string>Witthues</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleShortVersionString</key><string>0.1</string>
