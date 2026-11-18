@@ -241,3 +241,21 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(!v.matchAny)
     }
 }
+
+@Suite struct DashboardPeriodTests {
+    @Test func spansAcrossTheYearBoundary() throws {
+        let now = day(2026, 1, 15)
+        func span(_ p: DashboardPeriod) throws -> [Date] {
+            let i = try #require(p.interval(now: now))
+            return [i.start, i.end]
+        }
+        #expect(try span(.lastMonth) == [day(2025, 12, 1), day(2026, 1, 1)])
+        #expect(try span(.thisQuarter) == [day(2026, 1, 1), day(2026, 4, 1)])
+        #expect(try span(.lastQuarter) == [day(2025, 10, 1), day(2026, 1, 1)])
+        #expect(try span(.last12Months) == [day(2025, 2, 1), day(2026, 2, 1)])
+        #expect(try span(.lastYear) == [day(2025, 1, 1), day(2026, 1, 1)])
+        // The last day of a quarter still belongs to it.
+        #expect(DashboardPeriod.thisQuarter.interval(now: day(2026, 6, 30))?.start == day(2026, 4, 1))
+        #expect(DashboardPeriod.all.interval(now: now) == nil)
+    }
+}
