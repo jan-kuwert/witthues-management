@@ -128,12 +128,9 @@ struct DashboardView: View {
             .padding(24)
             .animation(.snappy, value: layout)
         }
-        .background {
-            LinearGradient(colors: [Color(red: 0.93, green: 0.94, blue: 0.95), Color(red: 0.84, green: 0.86, blue: 0.89)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-                .opacity(0.6)
-                .ignoresSafeArea()
-        }
+        // The system's page colour (grey in light mode, dark in dark mode), so the glass cards stand out from it
+        // instead of the whole page looking washed out.
+        .background(Color(nsColor: .underPageBackgroundColor).ignoresSafeArea())
         .onChange(of: layout) { DashboardItem.save(layout) }
         .onChange(of: period) { old, new in
             // Start a custom span from the span shown before, so the dates are a useful starting point.
@@ -452,7 +449,10 @@ struct DashboardView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        // Solid, not glass: Liquid Glass over charts and lists looks milky. Glass stays on the clickable cards above.
+        .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 18))
+        .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5) }
+        .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
     }
 
     /// Bars per day or month, split into open and paid, over the whole span including empty days or months.

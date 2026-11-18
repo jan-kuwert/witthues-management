@@ -114,8 +114,12 @@ struct StatusLine: View {
     var body: some View {
         HStack(spacing: 6) {
             if model.isChecking {
-                ProgressView().controlSize(.small)
-                Text(model.progress.isEmpty ? "Mails werden abgerufen …" : model.progress)
+                if let fraction = model.progress?.fraction {
+                    ProgressView(value: fraction).progressViewStyle(.circular).controlSize(.small)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(model.progress.map(\.text).flatMap { $0.isEmpty ? nil : $0 } ?? "Mails werden abgerufen …")
             } else if let error = model.lastError {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(error).lineLimit(3)

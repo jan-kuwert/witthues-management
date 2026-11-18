@@ -28,7 +28,7 @@ func show(_ x: Extraction, name: String) {
 
 @MainActor func checkMail() async throws -> CheckSummary {
     let library = Library()
-    return try await MailChecker.check(library: library, password: Keychain.password(for: library.settings.username) ?? "") { print($0) }
+    return try await MailChecker.check(library: library, password: Keychain.password(for: library.settings.username) ?? "") { print($0.text) }
 }
 
 @MainActor func importFiles(_ paths: [String]) async throws {

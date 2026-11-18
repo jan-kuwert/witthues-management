@@ -10,7 +10,12 @@ import UserNotifications
 final class AppModel {
     let library = Library()
     var isChecking = false
-    var progress = ""
+    /// Where the running mail check or past-mail import stands; nil when nothing runs.
+    var progress: MailProgress?
+    /// True while older mails are read; the result of the last run, for the settings and the sheet.
+    var isReadingPast = false
+    var pastResult: String?
+    private var pastTask: Task<Void, Never>?
     var lastCheck: Date?
     var lastResult = ""
     var lastError: String?
@@ -51,7 +56,7 @@ final class AppModel {
             return
         }
         isChecking = true
-        defer { isChecking = false; progress = ""; lastCheck = Date() }
+        defer { isChecking = false; progress = nil; lastCheck = Date() }
         do {
             let password = Keychain.password(for: library.settings.username) ?? ""
             let summary = try await MailChecker.check(library: library, password: password) { [weak self] in self?.progress = $0 }
@@ -69,21 +74,33 @@ final class AppModel {
                                              password: Keychain.password(for: library.settings.username) ?? "").sorted()
     }
 
-    /// Reads mails from a date range in the chosen folders again; returns a short German summary.
-    func readPast(mailboxes: [String], from: Date, to: Date) async -> String {
-        guard !isChecking else { return "Es läuft gerade ein Abruf. Bitte kurz warten und erneut versuchen." }
+    /// Starts reading mails from a date range in the chosen folders again. It runs on even when the window
+    /// that started it closes; progress and the result are on the model.
+    func startReadingPast(mailboxes: [String], from: Date, to: Date) {
+        guard !isChecking else {
+            pastResult = "Es läuft gerade ein Abruf. Bitte kurz warten und erneut versuchen."
+            return
+        }
         isChecking = true
-        defer { isChecking = false; progress = "" }
-        do {
-            let password = Keychain.password(for: library.settings.username) ?? ""
-            let summary = try await MailChecker.readPast(library: library, password: password, mailboxes: mailboxes,
-                                                         from: from, to: to) { [weak self] in self?.progress = $0 }
-            if summary.filed > 0 { notify(summary.filed == 1 ? "1 ältere Rechnung abgelegt" : "\(summary.filed) ältere Rechnungen abgelegt") }
-            return ([summary.pastText] + summary.errors).joined(separator: "\n")
-        } catch {
-            return error.localizedDescription
+        isReadingPast = true
+        pastResult = nil
+        pastTask = Task {
+            defer { isChecking = false; isReadingPast = false; progress = nil }
+            do {
+                let password = Keychain.password(for: library.settings.username) ?? ""
+                let summary = try await MailChecker.readPast(library: library, password: password, mailboxes: mailboxes,
+                                                             from: from, to: to) { [weak self] in self?.progress = $0 }
+                if summary.filed > 0 { notify(summary.filed == 1 ? "1 ältere Rechnung abgelegt" : "\(summary.filed) ältere Rechnungen abgelegt") }
+                pastResult = ([summary.pastText] + summary.errors).joined(separator: "\n")
+            } catch is CancellationError {
+                pastResult = "Abgebrochen. " + (progress?.summary.pastText ?? "")
+            } catch {
+                pastResult = error.localizedDescription
+            }
         }
     }
+
+    func cancelReadingPast() { pastTask?.cancel() }
 
     /// Files PDFs or e-invoice XMLs dropped on the window, the same way as mail attachments.
     func importFiles(_ urls: [URL]) async {
