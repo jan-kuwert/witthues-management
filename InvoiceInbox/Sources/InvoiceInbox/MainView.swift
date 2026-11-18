@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarItem: Hashable {
-    case unpaid, paid, review, all, skipped
+    case dashboard, unpaid, paid, review, all, skipped
 }
 
 struct MainView: View {
@@ -14,43 +14,23 @@ struct MainView: View {
     @State private var selection: InvoiceRecord.ID?
     @State private var search = ""
     @State private var dropTargeted = false
+    /// An invoice the dashboard asked to open; selected once the list has switched.
+    @State private var pendingOpen: InvoiceRecord.ID?
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $sidebar) {
-                Section("Invoices") {
-                    row(.unpaid, "Unpaid", "tray.full", model.library.records.filter { $0.status == .unpaid }.count)
-                    row(.paid, "Paid", "archivebox", model.library.records.filter { $0.status == .paid }.count)
-                    row(.review, "Needs a look", "exclamationmark.bubble", model.library.records.filter(\.needsReview).count)
-                    row(.all, "All", "doc.on.doc", model.library.records.count)
+        Group {
+            if sidebar == .dashboard {
+                // Two columns, so the charts get the full width.
+                NavigationSplitView {
+                    sidebarList
+                } detail: {
+                    DashboardView { id in
+                        pendingOpen = id
+                        sidebar = .all
+                    }
                 }
-                Section("Mail") {
-                    row(.skipped, "Not invoices", "tray.and.arrow.down", model.library.skipped.count)
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210)
-            .safeAreaInset(edge: .bottom) {
-                StatusLine()
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 12))
-                    .padding(8)
-            }
-        } content: {
-            Group {
-                if sidebar == .skipped {
-                    SkippedList()
-                } else {
-                    InvoiceList(records: filtered, selection: $selection)
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-            .searchable(text: $search, placement: .toolbar, prompt: "Company, number, amount")
-        } detail: {
-            if let id = selection, sidebar != .skipped, model.library.records.contains(where: { $0.id == id }) {
-                InvoiceDetail(id: id).id(id)
             } else {
-                EmptyDetail()
+                invoiceSplitView
             }
         }
         .toolbar {
@@ -89,7 +69,57 @@ struct MainView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 20))
             }
         }
-        .onChange(of: sidebar) { selection = nil }
+        .onChange(of: sidebar) {
+            selection = pendingOpen
+            pendingOpen = nil
+        }
+    }
+
+    private var sidebarList: some View {
+        List(selection: $sidebar) {
+            Section {
+                Label("Dashboard", systemImage: "chart.bar.xaxis").tag(SidebarItem.dashboard)
+            }
+            Section("Invoices") {
+                row(.unpaid, "Unpaid", "tray.full", model.library.records.filter { $0.status == .unpaid }.count)
+                row(.paid, "Paid", "archivebox", model.library.records.filter { $0.status == .paid }.count)
+                row(.review, "Needs a look", "exclamationmark.bubble", model.library.records.filter(\.needsReview).count)
+                row(.all, "All", "doc.on.doc", model.library.records.count)
+            }
+            Section("Mail") {
+                row(.skipped, "Not invoices", "tray.and.arrow.down", model.library.skipped.count)
+            }
+        }
+        .navigationSplitViewColumnWidth(min: 190, ideal: 210)
+        .safeAreaInset(edge: .bottom) {
+            StatusLine()
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                .padding(8)
+        }
+    }
+
+    private var invoiceSplitView: some View {
+        NavigationSplitView {
+            sidebarList
+        } content: {
+            Group {
+                if sidebar == .skipped {
+                    SkippedList()
+                } else {
+                    InvoiceList(records: filtered, selection: $selection)
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 320, ideal: 380)
+            .searchable(text: $search, placement: .toolbar, prompt: "Company, number, amount")
+        } detail: {
+            if let id = selection, sidebar != .skipped, model.library.records.contains(where: { $0.id == id }) {
+                InvoiceDetail(id: id).id(id)
+            } else {
+                EmptyDetail()
+            }
+        }
     }
 
     private func row(_ item: SidebarItem, _ title: String, _ icon: String, _ count: Int) -> some View {
@@ -104,7 +134,7 @@ struct MainView: View {
         case .unpaid: list = list.filter { $0.status == .unpaid }
         case .paid: list = list.filter { $0.status == .paid }
         case .review: list = list.filter(\.needsReview)
-        case .all, .skipped: break
+        case .all, .skipped, .dashboard: break
         }
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
@@ -310,12 +340,15 @@ struct InvoiceDetail: View {
                             .buttonStyle(.glass)
                     }
                     if r.status == .unpaid {
-                        HStack {
-                            Text("Paid on").fixedSize()
-                            DatePicker("Paid on", selection: $paidDate, displayedComponents: .date).labelsHidden()
-                            Spacer()
-                            Button("Mark as paid") { apply(status: .paid, paidDate: paidDate) }
-                                .buttonStyle(.glassProminent)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Paid on").font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                DatePicker("Paid on", selection: $paidDate, displayedComponents: .date).labelsHidden()
+                                Spacer(minLength: 8)
+                                Button("Mark as paid") { apply(status: .paid, paidDate: paidDate) }
+                                    .buttonStyle(.glassProminent)
+                                    .fixedSize()
+                            }
                         }
                     } else {
                         HStack {
