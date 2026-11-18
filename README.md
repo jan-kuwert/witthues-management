@@ -1,6 +1,8 @@
 # Witthüs
 
-Eine Mac-App, die Rechnungen aus dem Postfach holt, umbenennt und in einen Ordner ablegt, zum Beispiel einen Ordner, der mit OneDrive synchronisiert wird. Unbezahlte Rechnungen liegen in `00 Offen`. Bezahlte kommen in einen Monatsordner wie `2026-03`.
+Eine Mac-App, die Rechnungen aus dem Postfach holt, umbenennt und in einen Ordner ablegt, zum Beispiel einen Ordner, der mit OneDrive synchronisiert wird. Unbezahlte Rechnungen liegen in einem Ordner für offene Rechnungen. Bezahlte wandern in einen Archivordner, zum Beispiel einen pro Monat. Wie die Ordner heißen, legt man in den Einstellungen fest.
+
+![Verarbeitung und Tech-Stack](docs/aufbau.svg)
 
 Sie ist für ein MacBook Air M1 mit 8 GB gebaut und läuft komplett auf dem Mac: ohne Cloud-Dienst, Docker oder lokales Sprachmodell zum Selbstinstallieren.
 
@@ -16,8 +18,8 @@ Sie ist für ein MacBook Air M1 mit 8 GB gebaut und läuft komplett auf dem Mac:
 
 1. **Mail abrufen:** Sie liest per IMAP das Postfach, standardmäßig Telekom (`secureimap.t-online.de:993`) mit der vollen Adresse und dem Homepage-Center-Passwort. Das Passwort liegt im macOS-Schlüsselbund. Mails werden nur gelesen: nie verschoben, gelöscht oder als gelesen markiert. Apple Mail kann also weiterlaufen wie bisher.
 2. **Nur Rechnungen:** Sie nimmt nur PDF- und XML-Anhänge und ignoriert alle anderen Dateien. AGB, Angebote, Lieferscheine, Auftragsbestätigungen und Newsletter landen unter „Keine Rechnungen“ und können dort von Hand abgelegt werden.
-3. **Umbenennen und ablegen:** `yy-mm-dd Firma Rechnungsnummer.pdf`, zum Beispiel `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf`, im Ordner `00 Offen`. Vorhandene Ordner werden wiederverwendet, fehlende angelegt. Nichts wird überschrieben: Gibt es den Namen schon, hängt die App „ (2)“ an. Doppelte Rechnungen erkennt sie am Dateiinhalt.
-4. **Bezahlt:** „Als bezahlt markieren“ mit Zahlungsdatum verschiebt die Datei (und eine XML daneben) in den Archivordner, standardmäßig `{yyyy}-{mm}`.
+3. **Umbenennen und ablegen:** `yy-mm-dd Firma Rechnungsnummer.pdf`, zum Beispiel `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf`, im Ordner für offene Rechnungen. Vorhandene Ordner werden wiederverwendet, fehlende angelegt. Nichts wird überschrieben: Gibt es den Namen schon, hängt die App „ (2)“ an. Doppelte Rechnungen erkennt sie am Dateiinhalt.
+4. **Bezahlt:** „Als bezahlt markieren“ mit Zahlungsdatum verschiebt die Datei (und eine XML daneben) in den Archivordner.
 
 ### Oberfläche
 
@@ -75,15 +77,11 @@ Einstellungen öffnen (⌘,).
 
 **Ordner**
 
-- **Hauptordner** wählen, zum Beispiel den Rechnungsordner in OneDrive. Alle anderen Ordner liegen darunter.
+- **Hauptordner** wählen, zum Beispiel einen Ordner, der mit OneDrive synchronisiert wird. Alle anderen Ordner liegen darunter.
 - Ordner und Dateiname sind Vorlagen mit Variablen. „Ordner wählen …“ kann auch neue Ordner anlegen. Eine Vorschau zeigt, wo eine neue Rechnung landet und wohin sie nach dem Bezahlen wandert.
-- `/` in einer Vorlage erzeugt Unterordner, zum Beispiel `Archiv/{paid_yyyy}-{paid_mm}`.
+- Es gibt drei Vorlagen: den Ordner für offene Rechnungen, den Archivordner für bezahlte Rechnungen und den Dateinamen. `/` in einer Vorlage erzeugt Unterordner, zum Beispiel `{yyyy}/{mm}` für einen Ordner pro Jahr mit Monatsordnern darin.
 
-| Einstellung | Standard | Beispiel |
-|---|---|---|
-| Ordner für offene Rechnungen | `00 Offen` | `00 Offen/` |
-| Ordner für bezahlte Rechnungen | `{yyyy}-{mm}` | `2026-03/` |
-| Dateiname | `{yy}-{mm}-{dd} {customer} {invoice}` | `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf` |
+Der Dateiname ist standardmäßig `{yy}-{mm}-{dd} {customer} {invoice}`, also etwa `26-03-07 Telekom Deutschland 19 5683 1701 2621.pdf`.
 
 | Variable | Bedeutung |
 |---|---|
@@ -162,7 +160,7 @@ swift run invoice-cli extract rechnung.pdf      # zeigt, was gelesen wird und de
 
 Offene Fragen:
 
-- **Archivmonat:** Kommt eine bezahlte Rechnung in den Monat der Rechnung (Standard: `{yyyy}-{mm}`) oder in den Monat der Zahlung (`{paid_yyyy}-{paid_mm}`)? Das lässt sich in den Einstellungen ändern.
+- **Archivmonat:** Kommt eine bezahlte Rechnung in den Ordner für den Monat der Rechnung (`{yyyy}`, `{mm}`) oder den Monat der Zahlung (`{paid_yyyy}`, `{paid_mm}`)? Das lässt sich in den Einstellungen ändern.
 - **`{customer}`:** Ist das die Firma, die die Rechnung schickt? So ist es eingebaut.
 - **Datum im Dateinamen:** Es wird das Rechnungsdatum verwendet. Einige der Beispieldateien waren anders benannt.
 
