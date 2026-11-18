@@ -303,3 +303,39 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(try #require(lib.records.first).filePath.hasSuffix("Rechnungen/2026-04/26-04-01 Musterlieferant ZF-2026-4711.pdf"))
     }
 }
+
+@Suite struct MailTextAndFolderTests {
+    @Test func bodyFromPlainOrHTML() {
+        let plain = "Subject: x\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nGr=FC=DFe, anbei die Rechnung\r\n--B--\r\n"
+        #expect(MIME.parse(Data(plain.utf8)).body == "Grüße, anbei die Rechnung")
+        let html = "Subject: y\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>p{}</style></head><body><p>Hallo&nbsp;Team</p><p>Betrag: 5&euro;</p></body></html>\r\n"
+        #expect(MIME.parse(Data(html.utf8)).body == "Hallo Team\nBetrag: 5€")
+    }
+
+    @MainActor @Test func existingFilesAreIndexedInPlace() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = tmp.appendingPathComponent("Rechnungen")
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        lib.settings.rootFolder = root.path
+        let fm = FileManager.default
+        try fm.createDirectory(at: root.appendingPathComponent("00 Offen"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("2025-01"), withIntermediateDirectories: true)
+        let open = root.appendingPathComponent("00 Offen/alt.pdf"), paid = root.appendingPathComponent("2025-01/x.pdf")
+        try fixture("zugferd.pdf").write(to: open)
+        try fixture("german.pdf").write(to: paid)
+        try fixture("agb.pdf").write(to: root.appendingPathComponent("2025-01/agb.pdf"))
+
+        let ex = Extractor(useAppleIntelligence: false)
+        let s = try await lib.indexFolders([root], extractor: ex)
+        #expect(s.messages == 3)
+        #expect(s.filed == 2)
+        #expect(s.skipped == 1)
+        // Not moved or renamed; status from the folder it lies in.
+        #expect(lib.records.first { $0.filePath == open.standardizedFileURL.path }?.status == .unpaid)
+        #expect(lib.records.first { $0.filePath == paid.standardizedFileURL.path }?.status == .paid)
+        #expect(fm.fileExists(atPath: open.path) && fm.fileExists(atPath: paid.path))
+        // A second run adds nothing.
+        #expect(try await lib.indexFolders([root], extractor: ex).filed == 0)
+        #expect(lib.records.count == 2)
+    }
+}

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WitthuesCore
 
@@ -8,7 +9,7 @@ struct PastMailSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Ältere Mails lesen").font(.title2.weight(.semibold))
+            Text("Einlesen").font(.title2.weight(.semibold))
             PastMailForm(folderListHeight: 180)
             HStack {
                 if model.isReadingPast {
@@ -34,8 +35,101 @@ struct PastMailForm: View {
     @State private var folders: [String] = []
     @State private var chosen: Set<String> = []
     @State private var loadError: String?
+    @State private var source = Source.mail
+    /// Folders on disk to read, such as the main folder with invoices filed before the app.
+    @State private var diskFolders: [URL] = []
+
+    enum Source: String, CaseIterable, Identifiable {
+        case mail = "Aus Mails", folders = "Aus vorhandenen Ordnern"
+        var id: Self { self }
+    }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Picker("Quelle", selection: $source) {
+                ForEach(Source.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(model.isReadingPast)
+            if source == .mail { mailOptions } else { folderOptions }
+            if model.isReadingPast {
+                MailProgressPanel()
+            } else if let result = model.pastResult {
+                Label(result, systemImage: "checkmark.circle").foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                if model.isReadingPast {
+                    Button("Abbrechen", role: .cancel) { model.cancelReadingPast() }
+                        .buttonStyle(.glass)
+                        .help("Hört nach der aktuellen Datei auf. Schon Erfasstes bleibt erfasst.")
+                } else {
+                    Button("Lesen") {
+                        if source == .mail {
+                            // Keeps the folder order from the list, so progress reads top to bottom.
+                            model.startReadingPast(mailboxes: folders.filter(chosen.contains), from: from, to: to)
+                        } else {
+                            model.startReadingFolders(diskFolders)
+                        }
+                    }
+                    .buttonStyle(.glassProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(model.isChecking || (source == .mail ? chosen.isEmpty : diskFolders.isEmpty))
+                }
+            }
+        }
+        .task { await loadFolders() }
+        .onAppear {
+            let root = model.library.settings.rootFolder
+            if diskFolders.isEmpty, !root.isEmpty { diskFolders = [URL(fileURLWithPath: root)] }
+        }
+    }
+
+    /// Existing invoice PDFs are read where they lie, without moving or renaming, so they count in the statistics.
+    private var folderOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Liest Rechnungs-PDFs, die schon in Ordnern liegen (mit Unterordnern), und nimmt sie in die Liste und die Übersicht auf. Die Dateien werden nicht verschoben oder umbenannt. Rechnungen im Ordner für offene Rechnungen zählen als offen, alle anderen als bezahlt. Schon bekannte Dateien werden übersprungen.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Ordner").font(.headline)
+            VStack(alignment: .leading, spacing: 6) {
+                if diskFolders.isEmpty {
+                    Text("Noch kein Ordner gewählt.").foregroundStyle(.secondary)
+                }
+                ForEach(diskFolders, id: \.self) { url in
+                    HStack {
+                        Image(systemName: "folder.fill").foregroundStyle(.blue)
+                        Text(url.path).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button { diskFolders.removeAll { $0 == url } } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                            .help("Ordner aus der Liste nehmen")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .glassEffect(.regular, in: .rect(cornerRadius: 12))
+            .disabled(model.isReadingPast)
+            Button("Ordner hinzufügen …") { addFolders() }.disabled(model.isReadingPast)
+        }
+    }
+
+    private func addFolders() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Hinzufügen"
+        if !model.library.settings.rootFolder.isEmpty { panel.directoryURL = URL(fileURLWithPath: model.library.settings.rootFolder) }
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls where !diskFolders.contains(url) { diskFolders.append(url) }
+    }
+
+    private var mailOptions: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Durchsucht Mails aus dem Zeitraum in den gewählten Ordnern nach Rechnungen. Schon abgelegte Rechnungen werden erkannt und nicht doppelt abgelegt. Der normale Abruf läuft danach unverändert weiter.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -71,31 +165,7 @@ struct PastMailForm: View {
                     .disabled(model.isReadingPast)
                 }
             }
-            if model.isReadingPast {
-                MailProgressPanel()
-            } else if let result = model.pastResult {
-                Label(result, systemImage: "checkmark.circle").foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            HStack {
-                Spacer()
-                if model.isReadingPast {
-                    Button("Abbrechen", role: .cancel) { model.cancelReadingPast() }
-                        .buttonStyle(.glass)
-                        .help("Hört nach der aktuellen Mail auf. Schon abgelegte Rechnungen bleiben abgelegt.")
-                } else {
-                    Button("Lesen") {
-                        // Keeps the folder order from the list, so progress reads top to bottom.
-                        model.startReadingPast(mailboxes: folders.filter(chosen.contains), from: from, to: to)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(chosen.isEmpty || model.isChecking)
-                }
-            }
         }
-        .task { await loadFolders() }
     }
 
     private func loadFolders() async {
@@ -128,8 +198,8 @@ struct MailProgressPanel: View {
             }
             HStack(spacing: 18) {
                 count("Gelesen", p.summary.messages, .secondary)
-                count("Neu abgelegt", p.summary.filed, .green)
-                count("Schon vorhanden", p.summary.duplicates, .blue)
+                count(p.unit == "Datei" ? "Neu erfasst" : "Neu abgelegt", p.summary.filed, .green)
+                count(p.unit == "Datei" ? "Schon bekannt" : "Schon vorhanden", p.summary.duplicates, .blue)
                 count("Keine Rechnung", p.summary.skipped, .orange)
                 count("Fehler", p.summary.errors.count, p.summary.errors.isEmpty ? .secondary : .red)
             }

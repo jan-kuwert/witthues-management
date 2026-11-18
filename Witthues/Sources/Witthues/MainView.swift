@@ -171,10 +171,10 @@ struct MainView: View {
             Section("Mail") {
                 row(.skipped, "Keine Rechnungen", "tray.and.arrow.down", model.library.skipped.count)
                 Button { model.showingPastMail = true } label: {
-                    Label("Ältere Mails lesen …", systemImage: "clock.arrow.circlepath")
+                    Label("Einlesen …", systemImage: "clock.arrow.circlepath")
                 }
                 .buttonStyle(.plain)
-                .help("Mails aus einem Zeitraum und aus beliebigen Mailordnern noch einmal nach Rechnungen durchsuchen (⇧⌘R)")
+                .help("Ältere Mails oder vorhandene Rechnungsordner einlesen, etwa für die Statistik (⇧⌘R)")
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 210)
@@ -569,6 +569,19 @@ struct InvoiceDetail: View {
                 .controlSize(.small)
                 .padding(.top, 4)
                 .help("Zeigt die Mail mit dieser Rechnung in Apple Mail, um die Quelle zu prüfen")
+            }
+            if let body = r.origin.body, !body.isEmpty {
+                Text("Mailtext").font(.caption).foregroundStyle(.secondary).padding(.top, 8)
+                ScrollView {
+                    Text(body)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .frame(maxHeight: 260)
+                .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 10))
+                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5) }
             }
         }
     }

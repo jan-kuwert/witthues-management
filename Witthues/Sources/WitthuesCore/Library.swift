@@ -57,7 +57,9 @@ public final class Library {
     /// Files one mail's attachments: invoices go to the unpaid folder, other PDFs to the skipped list,
     /// and other file types are ignored.
     public func ingest(mail: ParsedMail, extractor: Extractor) async throws -> [Outcome] {
-        let origin = MailOrigin(subject: mail.subject, from: mail.from, date: mail.date, messageID: mail.messageID)
+        let body = mail.body
+        let origin = MailOrigin(subject: mail.subject, from: mail.from, date: mail.date, messageID: mail.messageID,
+                                body: body.isEmpty ? nil : body)
         let xmls = mail.attachments.filter { $0.fileName.lowercased().hasSuffix(".xml") }
             .compactMap { a in EInvoice.parse(xml: a.data).map { (a, $0) } }
         let pdfs = mail.attachments.filter { $0.fileName.lowercased().hasSuffix(".pdf") || $0.mimeType == "application/pdf" }
@@ -110,6 +112,72 @@ public final class Library {
         records.insert(record, at: 0)
         save()
         return .filed(record)
+    }
+
+    // MARK: - Existing folders
+
+    public enum ExistingFile: Sendable, Equatable { case added, known, notInvoice }
+
+    /// Adds an invoice PDF that already lies in a folder, without moving or renaming it, so invoices filed
+    /// before the app count in the statistics. Files inside the unpaid folder count as open, all others as paid
+    /// (without a payment date, which the file does not tell).
+    public func indexExisting(_ url: URL, extractor: Extractor) async throws -> ExistingFile {
+        let path = url.standardizedFileURL.path
+        if records.contains(where: { URL(fileURLWithPath: $0.filePath).standardizedFileURL.path == path }) { return .known }
+        let data = try Data(contentsOf: url)
+        let hash = Self.sha256(data)
+        if records.contains(where: { $0.sha256 == hash }) { return .known }
+        let x = await extractor.extract(data: data, fileName: url.lastPathComponent, subject: "", sender: "")
+        guard x.isInvoice else { return .notInvoice }
+        let unpaid = organizer.folder(for: x.fields, status: .unpaid, paidDate: nil).standardizedFileURL.path
+        let record = InvoiceRecord(fields: x.fields, source: x.source, reviewReasons: x.reviewReasons,
+                                   status: path.hasPrefix(unpaid + "/") ? .unpaid : .paid, filePath: path,
+                                   origin: MailOrigin(subject: "Aus vorhandenem Ordner", attachmentName: url.lastPathComponent),
+                                   sha256: hash)
+        records.insert(record, at: 0)
+        save()
+        return .added
+    }
+
+    /// Reads every PDF in the folders and their subfolders with `indexExisting`. Stops between files when the
+    /// task is cancelled; what is added stays added.
+    public func indexFolders(_ folders: [URL], extractor: Extractor,
+                             progress: @MainActor (MailProgress) -> Void = { _ in }) async throws -> CheckSummary {
+        var p = MailProgress(step: "Dateien werden gesucht …")
+        p.unit = "Datei"
+        progress(p)
+        let files = Self.pdfs(in: folders)
+        p.total = files.count
+        for (n, url) in files.enumerated() {
+            try Task.checkCancellation()
+            p.current = n + 1
+            p.folder = url.deletingLastPathComponent().lastPathComponent
+            p.subject = url.lastPathComponent
+            progress(p)
+            p.summary.messages += 1
+            do {
+                switch try await indexExisting(url, extractor: extractor) {
+                case .added: p.summary.filed += 1
+                case .known: p.summary.duplicates += 1
+                case .notInvoice: p.summary.skipped += 1
+                }
+            } catch {
+                p.summary.errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
+            progress(p)
+        }
+        return p.summary
+    }
+
+    /// PDFs in the folders and all subfolders, each once, sorted by path.
+    nonisolated static func pdfs(in folders: [URL]) -> [URL] {
+        var found = Set<URL>()
+        for folder in folders {
+            guard let e = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
+                                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let url as URL in e where url.pathExtension.lowercased() == "pdf" { found.insert(url.standardizedFileURL) }
+        }
+        return found.sorted { $0.path < $1.path }
     }
 
     /// File types a paid invoice can be imported from: PDFs, e-invoice XML and photos or scans.

@@ -12,6 +12,18 @@ public struct ParsedMail: Sendable {
     public var messageID = ""
     public var date: Date?
     public var attachments: [MailAttachment] = []
+    /// The first plain-text and HTML parts that are not attachments.
+    public var plainText = ""
+    public var htmlText = ""
+
+    /// The mail's text for reading: the plain part, else the HTML part without tags, at most 20 000 characters.
+    public var body: String {
+        let text = plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? MIME.stripHTML(htmlText) : plainText
+        let cleaned = text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(cleaned.prefix(20_000))
+    }
 }
 
 /// Minimal MIME reader: headers, multipart bodies, base64 and quoted-printable, RFC 2047 encoded
@@ -24,29 +36,61 @@ public enum MIME {
         mail.from = decodeWords(headers["from"] ?? "")
         mail.messageID = (headers["message-id"] ?? "").trimmingCharacters(in: CharacterSet(charactersIn: " <>"))
         mail.date = parseDate(headers["date"] ?? "")
-        collect(raw, into: &mail.attachments, depth: 0)
+        collect(raw, into: &mail, depth: 0)
         return mail
     }
 
-    private static func collect(_ part: Data, into out: inout [MailAttachment], depth: Int) {
+    private static func collect(_ part: Data, into mail: inout ParsedMail, depth: Int) {
         guard depth < 12 else { return }
         let (headers, body) = splitHeaders(part)
         let (type, typeParams) = parseHeaderValue(headers["content-type"] ?? "text/plain")
         let (_, dispParams) = parseHeaderValue(headers["content-disposition"] ?? "")
         if type.hasPrefix("multipart/"), let boundary = typeParams["boundary"] {
-            for sub in splitMultipart(body, boundary: boundary) { collect(sub, into: &out, depth: depth + 1) }
+            for sub in splitMultipart(body, boundary: boundary) { collect(sub, into: &mail, depth: depth + 1) }
             return
         }
         let decoded = decode(body, encoding: (headers["content-transfer-encoding"] ?? "").lowercased())
         if type == "message/rfc822" {
-            collect(decoded, into: &out, depth: depth + 1)
+            collect(decoded, into: &mail, depth: depth + 1)
             return
         }
         var name = dispParams["filename"] ?? typeParams["name"] ?? ""
         name = decodeWords(name)
+        // The mail's own text: the first text part that is not an attachment.
+        if name.isEmpty, type == "text/plain" || type == "text/html" {
+            let text = string(decoded, charset: typeParams["charset"])
+            if type == "text/plain", mail.plainText.isEmpty { mail.plainText = text }
+            if type == "text/html", mail.htmlText.isEmpty { mail.htmlText = text }
+            return
+        }
         if name.isEmpty, type == "application/pdf" { name = "attachment.pdf" }
         guard !name.isEmpty else { return }
-        out.append(MailAttachment(fileName: name, mimeType: type, data: decoded))
+        mail.attachments.append(MailAttachment(fileName: name, mimeType: type, data: decoded))
+    }
+
+    /// Text in the part's charset, falling back to UTF-8 and Latin-1.
+    static func string(_ data: Data, charset: String?) -> String {
+        if let charset {
+            let cf = CFStringConvertIANACharSetNameToEncoding(charset.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) as CFString)
+            if cf != kCFStringEncodingInvalidId,
+               let s = String(data: data, encoding: String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cf))) {
+                return s
+            }
+        }
+        return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+    }
+
+    /// HTML as plain text: styles and scripts dropped, line breaks kept, tags removed, common entities decoded.
+    static func stripHTML(_ html: String) -> String {
+        var s = html.replacingOccurrences(of: "(?is)<(style|script|head)[^>]*>.*?</\\1>", with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: "(?i)<br\\s*/?>|</(p|div|tr|li|h[1-6])>", with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        for (entity, char) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"),
+                               ("&auml;", "ä"), ("&ouml;", "ö"), ("&uuml;", "ü"), ("&Auml;", "Ä"), ("&Ouml;", "Ö"),
+                               ("&Uuml;", "Ü"), ("&szlig;", "ß"), ("&euro;", "€"), ("&amp;", "&")] {
+            s = s.replacingOccurrences(of: entity, with: char)
+        }
+        return s.replacingOccurrences(of: "[ \t]+\n", with: "\n", options: .regularExpression)
     }
 
     static func splitHeaders(_ data: Data) -> ([String: String], Data) {

@@ -18,7 +18,7 @@ struct WitthuesApp: App {
                 Button("Mails jetzt abrufen") { model.checkNow() }
                     .keyboardShortcut("r")
                     .disabled(model.isChecking)
-                Button("Ältere Mails lesen …") { model.showingPastMail = true }
+                Button("Mails oder Ordner einlesen …") { model.showingPastMail = true }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }

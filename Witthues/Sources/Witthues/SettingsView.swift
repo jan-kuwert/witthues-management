@@ -10,7 +10,7 @@ struct SettingsView: View {
             PastMailForm(folderListHeight: 200)
                 .padding(20)
                 .frame(height: 520, alignment: .top)
-                .tabItem { Label("Ältere Mails", systemImage: "clock.arrow.circlepath") }
+                .tabItem { Label("Einlesen", systemImage: "clock.arrow.circlepath") }
             CheckSettings().tabItem { Label("Abruf", systemImage: "clock.arrow.circlepath") }
         }
         .frame(width: 620)

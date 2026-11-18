@@ -59,13 +59,17 @@ public struct MailOrigin: Codable, Equatable, Sendable {
     public var date: Date?
     public var messageID: String
     public var attachmentName: String
+    /// The mail's text, so the user can check what came with the invoice; nil for older records and files.
+    public var body: String?
 
-    public init(subject: String = "", from: String = "", date: Date? = nil, messageID: String = "", attachmentName: String = "") {
+    public init(subject: String = "", from: String = "", date: Date? = nil, messageID: String = "", attachmentName: String = "",
+                body: String? = nil) {
         self.subject = subject
         self.from = from
         self.date = date
         self.messageID = messageID
         self.attachmentName = attachmentName
+        self.body = body
     }
 }
 

@@ -16,6 +16,17 @@ public struct CheckSummary: Sendable, Equatable {
         return parts.joined(separator: ", ")
     }
 
+    /// The result of reading existing folders.
+    public var filesText: String {
+        if messages == 0 { return "Keine PDFs gefunden" }
+        var parts = [messages == 1 ? "1 PDF gelesen" : "\(messages) PDFs gelesen",
+                     filed == 1 ? "1 Rechnung neu erfasst" : "\(filed) Rechnungen neu erfasst"]
+        if duplicates > 0 { parts.append(duplicates == 1 ? "1 war schon bekannt" : "\(duplicates) waren schon bekannt") }
+        if skipped > 0 { parts.append(skipped == 1 ? "1 keine Rechnung" : "\(skipped) keine Rechnungen") }
+        if !errors.isEmpty { parts.append(errors.count == 1 ? "1 Fehler" : "\(errors.count) Fehler") }
+        return parts.joined(separator: ", ")
+    }
+
     /// The result of reading past mail, where most invoices may already be filed.
     public var pastText: String {
         if messages == 0 { return "Keine Mails im Zeitraum" }
@@ -36,6 +47,8 @@ public struct MailProgress: Sendable, Equatable {
     public var total = 0
     public var subject = ""
     public var summary = CheckSummary()
+    /// What is counted: „Mail“, or „Datei“ when reading folders.
+    public var unit = "Mail"
 
     public init(step: String = "") { self.step = step }
 
@@ -44,7 +57,7 @@ public struct MailProgress: Sendable, Equatable {
     /// One line, such as „INBOX: Mail 12 von 240“, or the current step before mails are read.
     public var text: String {
         guard total > 0 else { return step }
-        return (folder.isEmpty ? "" : "\(folder): ") + "Mail \(current) von \(total)"
+        return (folder.isEmpty ? "" : "\(folder): ") + "\(unit) \(current) von \(total)"
     }
 }
 

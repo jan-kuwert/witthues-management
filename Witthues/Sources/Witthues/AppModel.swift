@@ -77,6 +77,21 @@ final class AppModel {
     /// Starts reading mails from a date range in the chosen folders again. It runs on even when the window
     /// that started it closes; progress and the result are on the model.
     func startReadingPast(mailboxes: [String], from: Date, to: Date) {
+        runImport(notice: ("ältere Rechnung", "ältere Rechnungen"), text: \.pastText) { [library] progress in
+            try await MailChecker.readPast(library: library, password: Keychain.password(for: library.settings.username) ?? "",
+                                           mailboxes: mailboxes, from: from, to: to, progress: progress)
+        }
+    }
+
+    /// Starts adding the invoice PDFs already lying in these folders, without moving them, for the statistics.
+    func startReadingFolders(_ folders: [URL]) {
+        runImport(notice: ("vorhandene Rechnung", "vorhandene Rechnungen"), text: \.filesText) { [library, extractor] progress in
+            try await library.indexFolders(folders, extractor: extractor, progress: progress)
+        }
+    }
+
+    private func runImport(notice: (one: String, many: String), text: @escaping (CheckSummary) -> String,
+                           work: @escaping @MainActor (@MainActor (MailProgress) -> Void) async throws -> CheckSummary) {
         guard !isChecking else {
             pastResult = "Es läuft gerade ein Abruf. Bitte kurz warten und erneut versuchen."
             return
@@ -87,13 +102,11 @@ final class AppModel {
         pastTask = Task {
             defer { isChecking = false; isReadingPast = false; progress = nil }
             do {
-                let password = Keychain.password(for: library.settings.username) ?? ""
-                let summary = try await MailChecker.readPast(library: library, password: password, mailboxes: mailboxes,
-                                                             from: from, to: to) { [weak self] in self?.progress = $0 }
-                if summary.filed > 0 { notify(summary.filed == 1 ? "1 ältere Rechnung abgelegt" : "\(summary.filed) ältere Rechnungen abgelegt") }
-                pastResult = ([summary.pastText] + summary.errors).joined(separator: "\n")
+                let summary = try await work { [weak self] in self?.progress = $0 }
+                if summary.filed > 0 { notify(summary.filed == 1 ? "1 \(notice.one) erfasst" : "\(summary.filed) \(notice.many) erfasst") }
+                pastResult = ([text(summary)] + summary.errors).joined(separator: "\n")
             } catch is CancellationError {
-                pastResult = "Abgebrochen. " + (progress?.summary.pastText ?? "")
+                pastResult = "Abgebrochen. " + (progress.map { text($0.summary) } ?? "")
             } catch {
                 pastResult = error.localizedDescription
             }
