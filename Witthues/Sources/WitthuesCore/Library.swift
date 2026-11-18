@@ -203,7 +203,9 @@ public final class Library {
             records[i].fields.invoiceDate = Calendar.current.startOfDay(for: date)
             records[i].reviewReasons.append("Kein Rechnungsdatum gefunden, Zahlungsdatum verwendet")
         }
+        // Added by hand as paid, typically a receipt already on paper: it goes straight to the archive.
         try setPaid(record.id, true, on: date)
+        try archive([record.id])
         return records.first { $0.id == record.id }
     }
 
@@ -250,21 +252,24 @@ public final class Library {
 
     // MARK: - Changing invoices
 
-    /// Saves edited fields and paid status, renaming and moving the file to match. A name the user typed is kept.
+    /// Saves edited fields and paid status, renaming the file to match. A name the user typed is kept.
     public func update(_ id: InvoiceRecord.ID, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?) throws {
         guard let r = records.first(where: { $0.id == id }) else { return }
         try update(id, fields: fields, status: status, paidDate: paidDate, name: r.customName)
     }
 
     /// Saves fields and status with the file name (without extension) the user typed. nil, or the name the
-    /// template would give, follows the template. The folder always comes from the folder templates.
-    public func update(_ id: InvoiceRecord.ID, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, name: String?) throws {
+    /// template would give, follows the template. A paid invoice stays in the unpaid folder until it is archived
+    /// (`archive`, or it already was); open invoices always go to the unpaid folder.
+    public func update(_ id: InvoiceRecord.ID, fields: InvoiceFields, status: InvoiceStatus, paidDate: Date?, name: String?,
+                       archive: Bool = false) throws {
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         var r = records[i]
-        let newPaid = status == .paid ? (paidDate ?? Date()) : nil
+        let newPaid = status == .paid ? (paidDate ?? r.paidDate ?? Date()) : nil
         let o = organizer
         let cleanName = name.map(FileOrganizer.cleanName).flatMap { $0.isEmpty || $0 == o.baseName(for: fields, paidDate: newPaid) ? nil : $0 }
-        let url = try o.place(r.fileURL, fields: fields, status: status, paidDate: newPaid, name: cleanName)
+        let inArchive = status == .paid && (archive || isArchived(r))
+        let url = try o.place(r.fileURL, fields: fields, status: inArchive ? .paid : .unpaid, paidDate: newPaid, name: cleanName)
         if r.fields != fields {
             r.source = .manual
             r.reviewReasons = Extractor.check(fields)
@@ -279,9 +284,25 @@ public final class Library {
         save()
     }
 
+    /// Marks an invoice paid or open. Paying does not move the file; `archive` does that, when the user says so.
     public func setPaid(_ id: InvoiceRecord.ID, _ paid: Bool, on date: Date = Date()) throws {
         guard let r = records.first(where: { $0.id == id }) else { return }
         try update(id, fields: r.fields, status: paid ? .paid : .unpaid, paidDate: paid ? date : nil)
+    }
+
+    /// A paid invoice whose file has left the unpaid folder, normally into the archive folder.
+    public func isArchived(_ r: InvoiceRecord) -> Bool {
+        guard r.status == .paid else { return false }
+        let unpaid = organizer.folder(for: r.fields, status: .unpaid, paidDate: nil).standardizedFileURL.path
+        return r.fileURL.deletingLastPathComponent().standardizedFileURL.path != unpaid
+    }
+
+    /// Moves paid invoices into their archive folder. Open and already archived ones are left alone.
+    public func archive(_ ids: [InvoiceRecord.ID]) throws {
+        for id in ids {
+            guard let r = records.first(where: { $0.id == id }), r.status == .paid, !isArchived(r) else { continue }
+            try update(id, fields: r.fields, status: .paid, paidDate: r.paidDate, name: r.customName, archive: true)
+        }
     }
 
     public func markReviewed(_ id: InvoiceRecord.ID) {

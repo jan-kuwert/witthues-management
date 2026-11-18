@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import PDFKit
 import Testing
 @testable import WitthuesCore
 
@@ -164,9 +165,13 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         // The same attachment from a later mail is not filed twice.
         #expect(try await lib.ingest(data: pdf, fileName: "x.pdf", origin: MailOrigin(), extractor: ex) == .duplicate)
 
-        // Paid in May: the default archive folder is the invoice month; the unpaid copy is gone.
+        // Paid in May: the file stays until it is archived, then goes to the invoice month by default.
         try lib.setPaid(r.id, true, on: day(2026, 5, 2))
         var paid = try #require(lib.records.first)
+        #expect(paid.filePath == r.filePath && paid.status == .paid && !lib.isArchived(paid))
+        try lib.archive([r.id])
+        paid = try #require(lib.records.first)
+        #expect(lib.isArchived(paid))
         #expect(paid.filePath.hasSuffix("OneDrive/Rechnungen/2026-03/26-03-05 Musterlieferant ZF-2026-4711.pdf"))
         #expect(!FileManager.default.fileExists(atPath: r.filePath))
 
@@ -175,6 +180,8 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         try lib.setPaid(r.id, false)
         #expect(lib.records.first?.filePath == r.filePath)
         try lib.setPaid(r.id, true, on: day(2026, 5, 2))
+        #expect(lib.records.first?.filePath == r.filePath)
+        try lib.archive([r.id])
         paid = try #require(lib.records.first)
         #expect(paid.filePath.hasSuffix("OneDrive/Rechnungen/Archiv/2026-05/26-03-05 Musterlieferant ZF-2026-4711.pdf"))
         #expect(FileManager.default.fileExists(atPath: paid.filePath))
@@ -292,6 +299,7 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         try lib.update(r.id, fields: f, status: .unpaid, paidDate: nil)
         #expect(try #require(lib.records.first).filePath == now.filePath)
         try lib.setPaid(r.id, true, on: day(2026, 5, 2))
+        try lib.archive([r.id])
         now = try #require(lib.records.first)
         #expect(now.filePath.hasSuffix("Rechnungen/2026-03/Strom März-April.pdf"))
 
@@ -337,5 +345,27 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         // A second run adds nothing.
         #expect(try await lib.indexFolders([root], extractor: ex).filed == 0)
         #expect(lib.records.count == 2)
+    }
+}
+
+@Suite struct PrintTests {
+    @Test func everyInvoiceStartsOnAFreshSheet() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let one = tmp.appendingPathComponent("one.pdf"), three = tmp.appendingPathComponent("three.pdf")
+        try fixture("german.pdf").write(to: one)
+        let doc = try #require(PDFDocument(data: try fixture("english.pdf")))
+        let page = try #require(doc.page(at: 0))
+        doc.insert(page.copy() as! PDFPage, at: 1)
+        doc.insert(page.copy() as! PDFPage, at: 2)
+        #expect(doc.write(to: three))
+
+        // 1 page + blank back, 3 pages + blank, 1 page + blank: each invoice begins on an odd page (a front side).
+        let bundle = try #require(PrintBundle.document([one, three, one]))
+        #expect(bundle.pageCount == 2 + 4 + 2)
+        #expect(bundle.page(at: 1)?.string?.isEmpty ?? true)
+        #expect(bundle.page(at: 5)?.string?.isEmpty ?? true)
+        #expect(bundle.page(at: 6)?.string?.isEmpty == false)
+        #expect(PrintBundle.document([]) == nil)
     }
 }

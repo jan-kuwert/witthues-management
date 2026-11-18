@@ -205,11 +205,13 @@ struct MainView: View {
             Group {
                 if sidebar == .skipped {
                     SkippedList()
+                } else if sidebar == .paid {
+                    PaidList(records: filtered, selection: $selection)
                 } else {
                     InvoiceList(records: filtered, selection: $selection)
                 }
             }
-            .navigationSplitViewColumnWidth(min: 320, ideal: 380)
+            .navigationSplitViewColumnWidth(min: 360, ideal: 420)
             .searchable(text: $search, placement: .toolbar, prompt: "Firma, Nummer, Betrag")
         } detail: {
             if let id = selection, sidebar != .skipped, model.library.records.contains(where: { $0.id == id }) {
@@ -347,6 +349,8 @@ struct InvoiceList: View {
 
 struct InvoiceRow: View {
     let record: InvoiceRecord
+    /// False for a paid invoice whose file is still waiting to be moved to the archive.
+    var archived = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -370,6 +374,9 @@ struct InvoiceRow: View {
                 .font(.caption).foregroundStyle(.secondary)
                 if record.fileMissing {
                     Text("Datei wurde verschoben oder gelöscht").font(.caption).foregroundStyle(.red)
+                } else if record.status == .paid, !archived {
+                    Label("Nicht im Archiv", systemImage: "tray.full")
+                        .font(.caption).foregroundStyle(.blue).lineLimit(1)
                 } else if record.needsReview {
                     Text(record.reviewReasons.first ?? "").font(.caption).foregroundStyle(.orange).lineLimit(1)
                 }
@@ -518,6 +525,19 @@ struct InvoiceDetail: View {
                             Text("Bezahlt am \(r.paidDate?.formatted(date: .numeric, time: .omitted) ?? "–")")
                             Spacer()
                             Button("Als offen markieren") { apply(status: .unpaid, paidDate: nil) }.buttonStyle(.glass)
+                        }
+                        HStack {
+                            if model.library.isArchived(r) {
+                                Label("Im Archiv", systemImage: "archivebox").foregroundStyle(.secondary)
+                            } else {
+                                Label("Noch nicht im Archiv", systemImage: "tray").foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Ins Archiv verschieben") {
+                                    do { try model.library.archive([id]); if let r = record { load(r) } }
+                                    catch { model.lastError = error.localizedDescription }
+                                }
+                                .buttonStyle(.glassProminent)
+                            }
                         }
                     }
                 }
