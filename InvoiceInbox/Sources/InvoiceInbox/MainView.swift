@@ -33,7 +33,7 @@ struct MainView: View {
                 NavigationSplitView {
                     sidebarList
                 } detail: {
-                    DashboardView { id in openInvoice(id) }
+                    DashboardView(open: { id in openInvoice(id) }, show: { sidebar = $0 })
                 }
             } else if let (start, viewID) = archiveStart {
                 // Two columns, so the table gets the full width.

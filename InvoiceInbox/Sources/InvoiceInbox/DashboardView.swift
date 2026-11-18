@@ -7,6 +7,8 @@ struct DashboardView: View {
     @Environment(AppModel.self) private var model
     /// Opens an invoice in the list.
     var open: (InvoiceRecord.ID) -> Void
+    /// Shows a list from the sidebar, for the cards at the top.
+    var show: (SidebarItem) -> Void
     @State private var period: Period = .thisMonth
 
     enum Period: String, CaseIterable, Identifiable {
@@ -136,26 +138,32 @@ struct DashboardView: View {
         let unpaidCountable = unpaid.filter { currencyOf($0) == currency }
         return HStack(spacing: 16) {
             kpi("Offen", value: money(sum(unpaidCountable)), detail: "\(plural(unpaid.count)) offen",
-                icon: "tray.full", tint: .orange)
+                icon: "tray.full", tint: .orange, opens: .unpaid)
             kpi("Bezahlt", value: money(sum(countable.filter { $0.status == .paid })),
-                detail: plural(inPeriod.filter { $0.status == .paid }.count), icon: "checkmark.circle", tint: .green)
-            kpi("Gesamt", value: money(sum(countable)), detail: plural(inPeriod.count), icon: "sum", tint: .blue)
+                detail: plural(inPeriod.filter { $0.status == .paid }.count), icon: "checkmark.circle", tint: .green, opens: .paid)
             kpi("Zu prüfen", value: "\(model.library.records.filter(\.needsReview).count)",
-                detail: "\(model.library.skipped.count) übersprungen", icon: "exclamationmark.bubble", tint: .purple)
+                detail: "\(model.library.skipped.count) übersprungen", icon: "exclamationmark.bubble", tint: .purple, opens: .review)
+            kpi("Gesamt", value: money(sum(countable)), detail: plural(inPeriod.count), icon: "sum", tint: .blue, opens: .all)
         }
     }
 
     private func plural(_ n: Int) -> String { n == 1 ? "1 Rechnung" : "\(n) Rechnungen" }
 
-    private func kpi(_ title: String, value: String, detail: String, icon: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: icon).font(.callout.weight(.medium)).foregroundStyle(tint)
-            Text(value).font(.title.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
-            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+    /// A total at the top; clicking it opens the matching list.
+    private func kpi(_ title: String, value: String, detail: String, icon: String, tint: Color, opens: SidebarItem) -> some View {
+        Button { show(opens) } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(title, systemImage: icon).font(.callout.weight(.medium)).foregroundStyle(tint)
+                Text(value).font(.title.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect(cornerRadius: 18))
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular.tint(tint.opacity(0.08)), in: .rect(cornerRadius: 18))
+        .buttonStyle(.plain)
+        .glassEffect(.regular.tint(tint.opacity(0.08)).interactive(), in: .rect(cornerRadius: 18))
+        .help("„\(title)“ öffnen")
     }
 
     private func card<Content: View>(_ title: String, subtitle: String, @ViewBuilder content: () -> Content) -> some View {
