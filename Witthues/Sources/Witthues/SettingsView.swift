@@ -12,6 +12,7 @@ struct SettingsView: View {
                 .frame(height: 520, alignment: .top)
                 .tabItem { Label("Einlesen", systemImage: "clock.arrow.circlepath") }
             CheckSettings().tabItem { Label("Abruf", systemImage: "clock.arrow.circlepath") }
+            UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
         .frame(width: 620)
         .padding(.vertical, 8)

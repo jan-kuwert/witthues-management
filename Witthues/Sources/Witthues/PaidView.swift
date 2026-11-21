@@ -62,12 +62,10 @@ struct PaidList: View {
                                 if !archived {
                                     Button("Ins Archiv verschieben") { archive([r]) }
                                 }
-                                Button(r.printedAt == nil ? "Als gedruckt markieren" : "Als nicht gedruckt markieren") {
-                                    model.library.setPrinted([r.id], r.printedAt == nil)
+                                Button(r.printedAt == nil ? "Als gedruckt markieren" : "Als nicht gedruckt markieren …") {
+                                    if r.printedAt == nil { model.library.setPrinted([r.id], true) } else { model.askRevertPrinted([r.id]) }
                                 }
-                                Button("Als offen markieren") {
-                                    do { try model.library.setPaid(r.id, false) } catch { model.lastError = error.localizedDescription }
-                                }
+                                Button("Als offen markieren …") { model.askRevertPaid([r.id]) }
                                 Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                             }
                     }

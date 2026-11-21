@@ -1,0 +1,73 @@
+# Builds Witthüs on a GitHub-hosted Mac and publishes it as release vN (N = previous release + 1).
+# The app's updater reads the newest release and downloads Witthues.zip; Witthüs.dmg is for installing by hand.
+# Free for public repositories. Runs on every push to main that changes the app, or by hand under Actions.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ["Witthues/**", ".github/workflows/release.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Choose Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
+          echo "DEVELOPER_DIR=$XCODE/Contents/Developer" >> "$GITHUB_ENV"
+          echo "Using $XCODE"
+
+      - name: Next version
+        id: version
+        run: |
+          LAST=$(git tag --list 'v[0-9]*' | sed 's/^v//' | sort -n | tail -1)
+          echo "last=${LAST:-}" >> "$GITHUB_OUTPUT"
+          echo "next=$(( ${LAST:-0} + 1 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        working-directory: Witthues
+        run: swift test 2>&1 | tee ../test.log
+
+      - name: Build
+        working-directory: Witthues
+        env:
+          VERSION: ${{ steps.version.outputs.next }}
+        run: zsh build-app.sh 2>&1 | tee ../build.log
+
+      - name: Warnings
+        run: |
+          W=$(grep -h "warning:" build.log test.log | sort -u || true)
+          if [ -n "$W" ]; then
+            echo "$W" | while read -r line; do echo "::warning::$line"; done
+          fi
+
+      - name: Release notes
+        run: |
+          LAST="${{ steps.version.outputs.last }}"
+          RANGE=${LAST:+v$LAST..HEAD}
+          git log --no-merges --format='- %s' $RANGE -- Witthues | head -40 > notes.md
+          [ -s notes.md ] || echo "- Kleinere Verbesserungen" > notes.md
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.version.outputs.next }}
+        run: |
+          cp "Witthues/dist/Witthüs.dmg" Witthues.dmg
+          gh release create "v$V" Witthues/dist/Witthues.zip Witthues.dmg \
+            --title "Witthüs $V" --notes-file notes.md --target "$GITHUB_SHA"

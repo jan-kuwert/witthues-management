@@ -114,6 +114,8 @@ struct MainView: View {
             }
         }
         .sheet(item: $adding) { AddInvoiceSheet(initial: $0.urls) }
+        .revertConfirmation()
+        .updateInstallPrompt()
         .sheet(isPresented: Binding(get: { model.showingPastMail }, set: { model.showingPastMail = $0 })) { PastMailSheet() }
         .sheet(item: $renaming) { v in
             ViewEditor(title: v.isFolder == true ? "Ordner bearbeiten" : "Ansicht bearbeiten", name: v.name, icon: v.symbol) { name, icon in
@@ -215,11 +217,14 @@ struct MainView: View {
             Text(dropProblem ?? "")
         }
         .safeAreaInset(edge: .bottom) {
-            StatusLine()
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .glassEffect(.regular, in: .rect(cornerRadius: 12))
-                .padding(8)
+            VStack(spacing: 6) {
+                UpdateNotice()
+                StatusLine()
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 12))
+            }
+            .padding(8)
         }
     }
 
@@ -383,8 +388,9 @@ struct InvoiceList: View {
             InvoiceRow(record: r, nextSkonto: r.id == next)
                 .tag(r.id)
                 .contextMenu {
-                    Button(r.status == .paid ? "Als offen markieren" : "Als bezahlt markieren") {
-                        do { try model.library.setPaid(r.id, r.status != .paid) } catch { model.lastError = error.localizedDescription }
+                    Button(r.status == .paid ? "Als offen markieren …" : "Als bezahlt markieren") {
+                        if r.status == .paid { model.askRevertPaid([r.id]); return }
+                        do { try model.library.setPaid(r.id, true) } catch { model.lastError = error.localizedDescription }
                     }
                     Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                     Divider()
@@ -727,7 +733,7 @@ struct InvoiceDetail: View {
             HStack {
                 Text("Bezahlt am \(r.paidDate?.formatted(date: .numeric, time: .omitted) ?? "–")")
                 Spacer()
-                Button("Als offen markieren") { apply(status: .unpaid, paidDate: nil) }.buttonStyle(.glass).disabled(locked)
+                Button("Als offen markieren …") { saveIfChanged(); model.askRevertPaid([id]) }.buttonStyle(.glass).disabled(locked)
             }
             HStack {
                 if r.stage == .archived {
@@ -757,7 +763,8 @@ struct InvoiceDetail: View {
                 .disabled(r.fileMissing)
                 .help("Beidseitig auf A4 drucken; danach als gedruckt markiert")
                 Spacer()
-                Toggle("Gedruckt", isOn: Binding(get: { r.printedAt != nil }, set: { model.library.setPrinted([r.id], $0) }))
+                Toggle("Gedruckt", isOn: Binding(get: { r.printedAt != nil },
+                                                   set: { $0 ? model.library.setPrinted([r.id], true) : model.askRevertPrinted([r.id]) }))
                     .toggleStyle(.checkbox)
                     .help("Merkt sich, welche Rechnungen schon auf Papier abgelegt sind")
             }

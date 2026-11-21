@@ -216,7 +216,7 @@ public struct Extractor: Sendable {
             \(document)
             """
         return try await session.respond(to: prompt, generating: ModelInvoice.self,
-                                         options: GenerationOptions(sampling: .greedy)).content
+                                         options: GenerationOptions(samplingMode: .greedy)).content
     }
 
     static func merge(model m: ModelInvoice, rules: InvoiceFields, text: String, reasons: inout [String]) -> InvoiceFields {

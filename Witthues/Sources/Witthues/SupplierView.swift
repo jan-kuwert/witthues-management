@@ -196,8 +196,8 @@ private struct ReassignSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("„\(supplier.name)“ löschen").font(.title3.weight(.semibold))
-            Text(count == 1 ? "Zu diesem Lieferanten gehört 1 Rechnung." : "Zu diesem Lieferanten gehören \(count) Rechnungen.")
-                + Text(" Wem sollen sie gehören? Sie bekommen dessen Namen (auch im Dateinamen), und „\(supplier.name)“ wird künftig als dessen Schreibweise erkannt.")
+            Text((count == 1 ? "Zu diesem Lieferanten gehört 1 Rechnung." : "Zu diesem Lieferanten gehören \(count) Rechnungen.")
+                 + " Wem sollen sie gehören? Sie bekommen dessen Namen (auch im Dateinamen), und „\(supplier.name)“ wird künftig als dessen Schreibweise erkannt.")
             Picker("Zuordnen zu", selection: $target) {
                 Text("Bitte wählen").tag(Supplier.ID?.none)
                 ForEach(others) { Text($0.name).tag(Supplier.ID?.some($0.id)) }

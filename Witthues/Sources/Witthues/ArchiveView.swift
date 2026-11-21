@@ -701,15 +701,16 @@ struct ArchiveView: View {
                 Button("Heute als bezahlt markieren") { setPaid(picked, true) }
             }
             if picked.contains(where: { $0.status == .paid }) {
-                Button("Als offen markieren") { setPaid(picked, false) }
+                Button("Als offen markieren …") { model.askRevertPaid(picked.filter { $0.status == .paid }.map(\.id)) }
             }
             if picked.contains(where: { $0.stage == .paid }) {
                 Button("Ins Archiv verschieben") {
                     do { try model.library.archive(picked.map(\.id)) } catch { model.lastError = error.localizedDescription }
                 }
             }
-            Button(picked.allSatisfy { $0.printedAt != nil } ? "Als nicht gedruckt markieren" : "Als gedruckt markieren") {
-                model.library.setPrinted(picked.map(\.id), !picked.allSatisfy { $0.printedAt != nil })
+            Button(picked.allSatisfy { $0.printedAt != nil } ? "Als nicht gedruckt markieren …" : "Als gedruckt markieren") {
+                if picked.allSatisfy({ $0.printedAt != nil }) { model.askRevertPrinted(picked.map(\.id)) }
+                else { model.library.setPrinted(picked.map(\.id), true) }
             }
             Divider()
             Button("In den Papierkorb", role: .destructive) {

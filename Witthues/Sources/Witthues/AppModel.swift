@@ -3,7 +3,7 @@ import Foundation
 import WitthuesCore
 import Observation
 import ServiceManagement
-import UserNotifications
+@preconcurrency import UserNotifications
 
 /// App state shared by the window, the menu bar item and settings: runs mail checks on launch,
 /// on a timer while the app is open, and when the user asks.
@@ -30,6 +30,7 @@ final class AppModel {
             MainActor.assumeIsolated { self?.library.refreshFiles() }
         }
         restartTimer()
+        startUpdateChecks()
         // Payment terms for invoices filed before the app read them.
         Task { await library.readMissingTerms() }
         if library.settings.checkOnLaunch { checkNow() }
@@ -184,6 +185,127 @@ final class AppModel {
                 : lastResult + " · " + (s.errors.count == 1 ? "1 Datei nicht importiert: " : "\(s.errors.count) Dateien nicht importiert: ")
                     + s.errors.joined(separator: "; ")
         }
+    }
+
+    // MARK: - Reverting paid and printed
+
+    /// Taking back „bezahlt“ or „gedruckt“ for these invoices, waiting for the user to confirm.
+    struct Revert: Identifiable {
+        let id = UUID()
+        var ids: [InvoiceRecord.ID]
+        /// True for „gedruckt“, false for „bezahlt“.
+        var printed: Bool
+    }
+    var revert: Revert?
+
+    func askRevertPaid(_ ids: [InvoiceRecord.ID]) { revert = Revert(ids: ids, printed: false) }
+    func askRevertPrinted(_ ids: [InvoiceRecord.ID]) { revert = Revert(ids: ids, printed: true) }
+
+    func confirm(_ r: Revert) {
+        if r.printed {
+            library.setPrinted(r.ids, false)
+        } else {
+            for id in r.ids where library.records.first(where: { $0.id == id })?.status == .paid {
+                do { try library.setPaid(id, false) } catch { lastError = error.localizedDescription }
+            }
+        }
+    }
+
+    // MARK: - Updates
+
+    /// The newest release on GitHub, once known.
+    var latestRelease: Release?
+    var isCheckingUpdate = false
+    var isDownloadingUpdate = false
+    var updateError: String?
+    var lastUpdateCheck: Date?
+    /// The version downloaded and waiting to be installed, now or on the next start.
+    var downloadedVersion: Int? = Updates.staged().map(\.version)
+    /// Asks „Jetzt installieren oder beim nächsten Start?“ after a download.
+    var askingInstall = false
+    /// The version whose notice the user closed; a newer one shows again.
+    var dismissedUpdate = UserDefaults.standard.integer(forKey: "dismissedUpdate") {
+        didSet { UserDefaults.standard.set(dismissedUpdate, forKey: "dismissedUpdate") }
+    }
+    var autoCheckUpdates = UserDefaults.standard.object(forKey: "autoCheckUpdates") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoCheckUpdates, forKey: "autoCheckUpdates"); startUpdateChecks() }
+    }
+    private var updateTimer: Task<Void, Never>?
+
+    var currentVersion: Int { Updates.current }
+    var updateAvailable: Bool { (latestRelease?.version ?? 0) > currentVersion }
+    /// The notice at the bottom of the sidebar: a new version not closed by the user, or one ready to install.
+    var showsUpdateNotice: Bool {
+        if let d = downloadedVersion, d > currentVersion { return true }
+        return updateAvailable && latestRelease?.version != dismissedUpdate
+    }
+
+    /// Installs an update downloaded before, then checks GitHub on start and every six hours.
+    private func startUpdateChecks() {
+        updateTimer?.cancel()
+        updateTimer = Task { [weak self] in
+            guard let self else { return }
+            if let staged = Updates.staged() {
+                if staged.version > currentVersion, isInstalledApp {
+                    installNow()
+                    return
+                }
+                try? FileManager.default.removeItem(at: Updates.stagingFolder)
+                downloadedVersion = nil
+            }
+            while autoCheckUpdates, !Task.isCancelled {
+                await checkForUpdate()
+                try? await Task.sleep(for: .seconds(6 * 3600))
+            }
+        }
+    }
+
+    /// True when running as Witthüs.app, not from `swift run`.
+    var isInstalledApp: Bool { Bundle.main.bundleURL.pathExtension == "app" }
+
+    func checkForUpdate() async {
+        guard !isCheckingUpdate else { return }
+        isCheckingUpdate = true
+        defer { isCheckingUpdate = false; lastUpdateCheck = Date() }
+        do {
+            latestRelease = try await Updates.latest()
+            updateError = nil
+        } catch {
+            updateError = error.localizedDescription
+        }
+    }
+
+    func downloadUpdate() {
+        guard let release = latestRelease, !isDownloadingUpdate else { return }
+        isDownloadingUpdate = true
+        updateError = nil
+        Task {
+            defer { isDownloadingUpdate = false }
+            do {
+                _ = try await Updates.download(release)
+                downloadedVersion = release.version
+                askingInstall = true
+            } catch {
+                updateError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Puts the downloaded version in place of this app and starts it.
+    func installNow() {
+        do {
+            try Updates.installStaged(over: Bundle.main.bundleURL)
+        } catch {
+            updateError = error.localizedDescription
+            return
+        }
+        // A shell waits until this app has quit, then opens the new one.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; open \"$0\"",
+                       Bundle.main.bundleURL.path]
+        do { try p.run() } catch { updateError = error.localizedDescription; return }
+        NSApp.terminate(nil)
     }
 
     var unpaidCount: Int { library.liveRecords.filter { $0.status == .unpaid }.count }

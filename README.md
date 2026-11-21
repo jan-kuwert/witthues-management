@@ -85,7 +85,17 @@ Danach liegen in `Witthues/dist/`:
 
 ### Update (alle Daten bleiben erhalten)
 
-Einstellungen, Passwort, Ansichten, Dashboard-Anordnung und die Liste der Rechnungen liegen **nicht in der App**, sondern in `~/Library/Application Support/Witthues/`, im Schlüsselbund und in den App-Einstellungen von macOS. Die Rechnungen selbst liegen im Hauptordner (OneDrive). Ein Update tauscht nur die App aus:
+Einstellungen, Passwort, Ansichten, Dashboard-Anordnung und die Liste der Rechnungen liegen **nicht in der App**, sondern in `~/Library/Application Support/Witthues/`, im Schlüsselbund und in den App-Einstellungen von macOS. Die Rechnungen selbst liegen im Hauptordner (OneDrive). Ein Update tauscht nur die App aus.
+
+**Automatisch (empfohlen):** Jeder Push auf `main`, der die App ändert, baut auf einem Mac von GitHub (für öffentliche Repos kostenlos) eine neue Version und veröffentlicht sie als Release `v1`, `v2`, `v3` … (`.github/workflows/release.yml`; von Hand unter *Actions → Release → Run workflow*). Witthüs sucht beim Start und alle 6 Stunden danach:
+
+- Unten in der Seitenleiste erscheint „Neue Version N“ mit **Herunterladen** (mit × ausblenden bis zur nächsten Version).
+- Nach dem Download: **Jetzt installieren** (Witthüs startet neu) oder **Beim nächsten Start** (wird dann beim Öffnen installiert).
+- *Einstellungen → Updates* zeigt immer die installierte und die neueste Version, „Jetzt prüfen“, die Änderungen und den Download.
+
+Die erste Version mit Updater muss einmal von Hand installiert werden (die `Witthues.dmg` aus dem neuesten Release oder selbst gebaut). Weil die App nur ad-hoc signiert ist, fragt macOS nach einem Update eventuell einmal, ob Witthüs das Mail-Passwort aus dem Schlüsselbund lesen darf: **Immer erlauben**.
+
+**Von Hand:**
 
 ```sh
 cd witthues-management
@@ -93,7 +103,7 @@ git pull
 cd Witthues && ./build-app.sh
 ```
 
-Dann auf dem Ziel-Mac Witthüs beenden (Menüleiste → Beenden), die neue `Witthüs.dmg` öffnen und die App nach „Programme“ ziehen → **Ersetzen**. Beim nächsten Start ist alles wie vorher. Wird auf demselben Mac gebaut, reicht `cp -R "dist/Witthüs.app" /Applications/` nach dem Beenden. Nach dem Ersetzen kann macOS einmal wieder „Dennoch öffnen“ verlangen.
+Dann auf dem Ziel-Mac Witthüs beenden (Menüleiste → Beenden), die neue `Witthüs.dmg` öffnen und die App nach „Programme“ ziehen → **Ersetzen**. Selbst gebaute Apps haben Version 0 und zeigen deshalb das neueste Release als Update an. `VERSION=12 ./build-app.sh` stempelt eine Nummer.
 
 **Ohne Warnung beim ersten Start** geht es nur mit einem Apple-Developer-Konto (99 €/Jahr): dann mit einer „Developer ID“ signieren und von Apple notarisieren lassen. Für einen Mac im Büro lohnt sich das nicht.
 

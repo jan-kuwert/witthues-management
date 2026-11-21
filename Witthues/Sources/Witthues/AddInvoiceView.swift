@@ -17,7 +17,7 @@ struct AddInvoiceSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     var initial: [URL] = []
-    @State private var stage = Stage.paid
+    @State private var stage = Stage.open
     @State private var withDate = true
     @State private var paidDate = Date()
     @State private var photos: [PhotosPickerItem] = []

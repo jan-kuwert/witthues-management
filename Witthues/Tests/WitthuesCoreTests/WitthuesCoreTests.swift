@@ -662,3 +662,20 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(lib.records.first?.fields.seller == "Druckerei Bspl.")
     }
 }
+
+@Suite struct UpdateTests {
+    /// The updater reads the version from the tag and picks the zipped app, not the .dmg next to it.
+    @Test func readsLatestRelease() throws {
+        let json = """
+            {"tag_name": "v12", "body": "- Skonto", "published_at": "2026-11-21T10:00:00Z",
+             "html_url": "https://github.com/jan-kuwert/witthues-management/releases/tag/v12",
+             "assets": [{"name": "Witthues.dmg", "browser_download_url": "https://example.com/Witthues.dmg"},
+                        {"name": "Witthues.zip", "browser_download_url": "https://example.com/Witthues.zip"}]}
+            """
+        let r = try Updates.parse(Data(json.utf8))
+        #expect(r.version == 12 && r.download.lastPathComponent == "Witthues.zip" && r.notes == "- Skonto")
+        #expect(Updates.version(tag: "v3") == 3 && Updates.version(tag: "0.1") == nil)
+        let noZip = json.replacingOccurrences(of: "Witthues.zip", with: "other.zip")
+        #expect(throws: UpdateError.self) { try Updates.parse(Data(noZip.utf8)) }
+    }
+}
