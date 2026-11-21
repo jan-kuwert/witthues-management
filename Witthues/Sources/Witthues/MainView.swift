@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarItem: Hashable {
-    case dashboard, unpaid, paid, archived, review, all, skipped, deleted
+    case dashboard, suppliers, unpaid, paid, archived, review, all, skipped, deleted
     /// A folder in the archive table; nil is every file.
     case archive(String?)
     /// A saved archive view.
@@ -50,6 +50,12 @@ struct MainView: View {
                     sidebarList
                 } detail: {
                     DashboardView(open: { id in openInvoice(id) }, show: { sidebar = $0 })
+                }
+            } else if sidebar == .suppliers {
+                NavigationSplitView {
+                    sidebarList
+                } detail: {
+                    SupplierView(open: { id in openInvoice(id) })
                 }
             } else if let (start, viewID) = archiveStart {
                 // Two columns, so the table gets the full width.
@@ -135,6 +141,7 @@ struct MainView: View {
         List(selection: $sidebar) {
             Section {
                 Label("Übersicht", systemImage: "chart.bar.xaxis").tag(SidebarItem.dashboard)
+                row(.suppliers, "Lieferanten", "building.2", model.library.suppliers.count)
             }
             Section("Rechnungen") {
                 let live = model.library.liveRecords
@@ -327,7 +334,7 @@ struct MainView: View {
         case .paid: list = list.filter { $0.stage == .paid }
         case .archived: list = list.filter { $0.stage == .archived }
         case .review: list = list.filter(\.needsReview)
-        case .all, .skipped, .dashboard, .archive, .view, .deleted: break
+        case .all, .skipped, .dashboard, .suppliers, .archive, .view, .deleted: break
         }
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
@@ -594,7 +601,10 @@ struct InvoiceDetail: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 10) {
-            field("Firma (Absender)", text: $fields.seller, copy: true)
+            VStack(alignment: .leading, spacing: 4) {
+                field("Firma (Absender)", text: $fields.seller, copy: true, highlight: similarSupplier != nil)
+                supplierHint
+            }
             field("Rechnungsnummer", text: $fields.invoiceNumber, copy: true)
             HStack {
                 Toggle("Datum", isOn: $hasDate).toggleStyle(.checkbox)
@@ -612,12 +622,43 @@ struct InvoiceDetail: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
     }
 
-    private func field(_ label: String, text: Binding<String>, copy: Bool = false) -> some View {
+    /// A known supplier much like the typed company name, probably the same company spelled differently.
+    private var similarSupplier: Supplier? {
+        if case .close(let s) = model.library.suppliers.match(fields.seller) { return s }
+        return nil
+    }
+
+    /// Under the company name: the closest known supplier to take over, or that the name is new.
+    @ViewBuilder private var supplierHint: some View {
+        if let s = similarSupplier {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("Ähnlicher Lieferant: \(s.name)").lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button("Übernehmen") {
+                    fields.seller = s.name
+                    saveIfChanged()
+                }
+                .buttonStyle(.link)
+            }
+            .font(.caption)
+            .help("Gibt es diesen Lieferanten schon unter anderem Namen? „Übernehmen“ setzt den bekannten Namen ein.")
+        } else if !fields.seller.trimmingCharacters(in: .whitespaces).isEmpty,
+                  case .none = model.library.suppliers.match(fields.seller) {
+            Label("Neuer Lieferant, wird beim Speichern angelegt", systemImage: "plus.circle")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func field(_ label: String, text: Binding<String>, copy: Bool = false, highlight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 4) {
                 // Return saves right away.
                 TextField(label, text: text).textFieldStyle(.roundedBorder).labelsHidden().onSubmit { saveIfChanged() }
+                    .overlay {
+                        if highlight { RoundedRectangle(cornerRadius: 6).strokeBorder(.orange, lineWidth: 2).allowsHitTesting(false) }
+                    }
                 if copy { CopyButton(value: text.wrappedValue, label: label) }
             }
         }

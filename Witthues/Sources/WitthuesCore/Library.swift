@@ -11,6 +11,8 @@ public final class Library {
     public var settings: AppSettings { didSet { if settings != oldValue { saveSettings() } } }
     /// Saved archive views, kept in views.json.
     public var views: [SavedView] { didSet { if views != oldValue { saveViews() } } }
+    /// Known suppliers with the names the user wants, kept in suppliers.json.
+    public var suppliers: [Supplier] = [] { didSet { if suppliers != oldValue { saveSuppliers() } } }
     private var cursors: [String: MailboxCursor] = [:]
     /// Files in the folders that were read and are not invoices (or copies of known ones), so they don't
     /// show up as unread again.
@@ -55,6 +57,13 @@ public final class Library {
             migrated = true
         }
         if migrated { save() }
+        if let list = try? decoder.decode([Supplier].self, from: Data(contentsOf: directory.appendingPathComponent("suppliers.json"))) {
+            suppliers = list
+        } else {
+            // First start with suppliers: the companies of the invoices filed so far.
+            for r in records.sorted(by: { $0.importedAt < $1.importedAt }) { register(r.fields.seller) }
+            saveSuppliers()
+        }
         refreshFiles()
     }
 
@@ -121,6 +130,7 @@ public final class Library {
             return .skipped(s)
         }
         guard settings.isFolderConfigured else { throw IMAPError(message: "Bitte zuerst den Hauptordner in den Einstellungen wählen") }
+        matchSupplier(&x.fields, &x.reviewReasons)
         // The same file may already lie in the folders, put there by hand or before the app existed.
         if copyInMainFolder(of: data) != nil { return .duplicate }
         let paid = stage == .open ? nil : paidDate
@@ -182,7 +192,7 @@ public final class Library {
             save()
             return .known
         }
-        let x = await extractor.extract(data: data, fileName: url.lastPathComponent, subject: "", sender: "")
+        var x = await extractor.extract(data: data, fileName: url.lastPathComponent, subject: "", sender: "")
         guard x.isInvoice || force else {
             ignoredFiles.insert(path)
             // Listed under „Keine Rechnungen“, where it can still be declared an invoice.
@@ -195,6 +205,7 @@ public final class Library {
             save()
             return .notInvoice
         }
+        matchSupplier(&x.fields, &x.reviewReasons)
         var record = InvoiceRecord(fields: x.fields, source: x.source, reviewReasons: x.reviewReasons,
                                    status: stage == .open ? .unpaid : .paid, paidDate: stage == .open ? nil : paidDate, filePath: path,
                                    origin: MailOrigin(subject: "Aus vorhandenem Ordner", attachmentName: url.lastPathComponent),
@@ -369,6 +380,8 @@ public final class Library {
         let keep = r.inPlace == true && stage == r.stage
         let url = try o.place(r.fileURL, fields: fields, stage: stage, paidDate: newPaid, name: cleanName, keepFolder: keep)
         r.inPlace = keep ? true : nil
+        // A company name the user typed or kept becomes a known supplier.
+        if r.fields.seller != fields.seller { register(fields.seller) }
         if r.fields != fields {
             r.source = .manual
             r.reviewReasons = Extractor.check(fields)
@@ -424,7 +437,93 @@ public final class Library {
     public func markReviewed(_ id: InvoiceRecord.ID) {
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         records[i].reviewReasons = []
+        register(records[i].fields.seller)
         save()
+    }
+
+    // MARK: - Suppliers
+
+    /// Gives a read company name the supplier's chosen name when it is known; a name much like a known one is
+    /// marked for checking; a new one is added to the suppliers.
+    func matchSupplier(_ fields: inout InvoiceFields, _ reasons: inout [String]) {
+        let name = fields.seller.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        switch suppliers.match(name) {
+        case .exact(let s):
+            fields.seller = s.name
+            // A known supplier confirms a name guessed from the letterhead or the sender.
+            reasons.removeAll { $0.hasPrefix("Firmenname aus") }
+        case .close(let s):
+            reasons.append(Self.similarSupplierPrefix + s.name + "“")
+        case .none:
+            suppliers.append(Supplier(name: name))
+        }
+    }
+
+    static let similarSupplierPrefix = "Lieferant ähnlich wie „"
+
+    /// Adds the name as a supplier unless it, or a spelling of it, is known.
+    func register(_ name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if case .exact = suppliers.match(name) { return }
+        suppliers.append(Supplier(name: name))
+    }
+
+    /// Invoices (also deleted ones) whose company is this supplier.
+    public func records(of supplier: Supplier) -> [InvoiceRecord] {
+        let keys = supplier.keys
+        return records.filter { keys.contains(Supplier.key($0.fields.seller)) }
+    }
+
+    /// Renames a supplier. The old name stays as another spelling, and its invoices (and their files) get the new name.
+    public func renameSupplier(_ id: Supplier.ID, to name: String) throws {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let i = suppliers.firstIndex(where: { $0.id == id }), !name.isEmpty, name != suppliers[i].name else { return }
+        var s = suppliers[i]
+        s.aliases = Self.unique(s.aliases + [s.name]).filter { $0 != name }
+        s.name = name
+        // Another supplier with this name is the same company now.
+        if case .exact(let other) = suppliers.filter({ $0.id != id }).match(name) {
+            s.aliases = Self.unique(s.aliases + [other.name] + other.aliases).filter { $0 != name }
+            suppliers.removeAll { $0.id == other.id }
+        }
+        if let j = suppliers.firstIndex(where: { $0.id == id }) { suppliers[j] = s }
+        try relabel(s)
+    }
+
+    /// Merges suppliers into one: their names become its other spellings and their invoices get its name.
+    public func mergeSuppliers(_ ids: Set<Supplier.ID>, into target: Supplier.ID) throws {
+        guard var t = suppliers.first(where: { $0.id == target }) else { return }
+        let merged = suppliers.filter { ids.contains($0.id) && $0.id != target }
+        guard !merged.isEmpty else { return }
+        t.aliases = Self.unique(t.aliases + merged.flatMap { [$0.name] + $0.aliases }).filter { $0 != t.name }
+        suppliers.removeAll { ids.contains($0.id) && $0.id != target }
+        if let j = suppliers.firstIndex(where: { $0.id == target }) { suppliers[j] = t }
+        try relabel(t)
+    }
+
+    /// Gives the supplier's invoices its name, renaming their files like an edit would, but keeping how they were read.
+    private func relabel(_ s: Supplier) throws {
+        for r in records(of: s) {
+            guard let i = records.firstIndex(where: { $0.id == r.id }) else { continue }
+            let reasons = r.reviewReasons.filter { !$0.hasPrefix(Self.similarSupplierPrefix) && !$0.hasPrefix("Firmenname aus") }
+            if r.fields.seller != s.name && !r.fileMissing {
+                var f = r.fields
+                f.seller = s.name
+                try update(r.id, fields: f, status: r.status, paidDate: r.paidDate, name: r.customName)
+            } else {
+                records[i].fields.seller = s.name
+            }
+            records[i].source = r.source
+            records[i].reviewReasons = reasons
+        }
+        save()
+    }
+
+    private static func unique(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        return names.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     /// Invoices whose file still exists. Deleted ones (in the app or in Finder) are only in `deleted`.
@@ -566,6 +665,12 @@ public final class Library {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(Stored(records: records, skipped: skipped, cursors: cursors, ignoredFiles: ignoredFiles)) {
             try? data.write(to: directory.appendingPathComponent("library.json"), options: .atomic)
+        }
+    }
+
+    private func saveSuppliers() {
+        if let data = try? JSONEncoder().encode(suppliers) {
+            try? data.write(to: directory.appendingPathComponent("suppliers.json"), options: .atomic)
         }
     }
 

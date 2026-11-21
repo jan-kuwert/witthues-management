@@ -545,3 +545,43 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(PrintBundle.document([]) == nil)
     }
 }
+
+@MainActor @Suite struct SupplierTests {
+    @Test func matching() {
+        let list = [Supplier(name: "Telekom", aliases: ["Telekom Deutschland GmbH"]), Supplier(name: "Verlag Herder")]
+        #expect(list.match("TELEKOM DEUTSCHLAND GmbH") == .exact(list[0]))
+        #expect(list.match("Herder GmbH") == .close(list[1]))
+        // An OCR slip is close; a different company is not.
+        #expect(list.match("Te1ekom") == .close(list[0]))
+        #expect(list.match("Papierwerk Lahr") == .none)
+    }
+
+    @Test func renameAndMergeRelabelInvoicesAndFiles() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
+        let ex = Extractor(useAppleIntelligence: false)
+        guard case .filed(let a) = try await lib.ingest(data: try fixture("german.pdf"), fileName: "a.pdf", origin: MailOrigin(), extractor: ex)
+        else { Issue.record("not filed"); return }
+        let first = try #require(lib.suppliers.first { $0.name == a.fields.seller })
+
+        try lib.renameSupplier(first.id, to: "Druckerei Beispiel")
+        let renamed = try #require(lib.records.first)
+        #expect(renamed.fields.seller == "Druckerei Beispiel")
+        #expect(renamed.fileURL.lastPathComponent.contains("Druckerei Beispiel"))
+        #expect(FileManager.default.fileExists(atPath: renamed.filePath))
+        #expect(renamed.source == a.source)
+
+        // The old spelling on a new invoice now gets the chosen name.
+        var f = InvoiceFields(seller: a.fields.seller)
+        var reasons: [String] = []
+        lib.matchSupplier(&f, &reasons)
+        #expect(f.seller == "Druckerei Beispiel")
+
+        let other = Supplier(name: "Druckerei Bspl.")
+        lib.suppliers.append(other)
+        try lib.mergeSuppliers([first.id, other.id], into: other.id)
+        #expect(lib.suppliers.count == 1 && lib.suppliers[0].aliases.contains("Druckerei Beispiel"))
+        #expect(lib.records.first?.fields.seller == "Druckerei Bspl.")
+    }
+}
