@@ -9,12 +9,20 @@ public struct Supplier: Codable, Identifiable, Equatable, Sendable {
     public var aliases: [String]
     /// Postal address, from its first invoice that shows one; the user can change it.
     public var address: String?
+    /// Names the user said are not this supplier, so they are never offered as a match again.
+    public var excluded: [String]?
 
     public init(id: UUID = UUID(), name: String, aliases: [String] = [], address: String? = nil) {
         self.id = id
         self.name = name
         self.aliases = aliases
         self.address = address
+    }
+
+    /// Whether the user said this name is not this supplier.
+    public func excludes(_ name: String) -> Bool {
+        let k = Supplier.key(name)
+        return (excluded ?? []).contains { Supplier.key($0) == k }
     }
 
     /// Name and aliases in comparable form.
@@ -102,7 +110,8 @@ extension Array where Element == Supplier {
         let key = Supplier.key(name)
         guard !key.isEmpty else { return .none }
         if let s = first(where: { $0.keys.contains(key) }) { return .exact(s) }
-        let best = map { s in (s, ([s.name] + s.aliases).map { Supplier.similarity(name, $0) }.max() ?? 0) }.max { $0.1 < $1.1 }
+        let best = filter { !$0.excludes(name) }
+            .map { s in (s, ([s.name] + s.aliases).map { Supplier.similarity(name, $0) }.max() ?? 0) }.max { $0.1 < $1.1 }
         if let best, best.1 >= Supplier.closeEnough { return .close(best.0) }
         return .none
     }
@@ -112,6 +121,7 @@ extension Array where Element == Supplier {
         var pairs: [(Supplier, Supplier, Double)] = []
         for i in indices {
             for j in index(after: i)..<endIndex {
+                if self[i].excludes(self[j].name) || self[j].excludes(self[i].name) { continue }
                 let score = Supplier.similarity(self[i].name, self[j].name)
                 if score >= Supplier.closeEnough { pairs.append((self[i], self[j], score)) }
             }

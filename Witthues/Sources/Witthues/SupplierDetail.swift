@@ -9,6 +9,7 @@ struct SupplierDetail: View {
     let open: (InvoiceRecord.ID) -> Void
     let back: () -> Void
     @State private var address = ""
+    @State private var newAlias = ""
 
     private var supplier: Supplier? { model.library.suppliers.first { $0.id == id } }
 
@@ -114,7 +115,7 @@ struct SupplierDetail: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Andere Schreibweisen", systemImage: "character.cursor.ibeam").font(.headline)
             if s.aliases.isEmpty {
-                Text("Keine. Beim Umbenennen oder Zusammenführen kommen die alten Namen hierher.")
+                Text("Keine. Die App lernt sie von selbst, wenn ein Firmenname korrigiert, umbenannt oder zusammengeführt wird.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             ForEach(s.aliases, id: \.self) { alias in
@@ -127,6 +128,29 @@ struct SupplierDetail: View {
                     } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                     .buttonStyle(.borderless)
                     .help("Diese Schreibweise nicht mehr diesem Lieferanten zuordnen")
+                }
+            }
+            TextField("Schreibweise hinzufügen", text: $newAlias)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    let a = newAlias.trimmingCharacters(in: .whitespaces)
+                    guard !a.isEmpty, let i = model.library.suppliers.firstIndex(where: { $0.id == id }) else { return }
+                    if !model.library.suppliers[i].aliases.contains(a) { model.library.suppliers[i].aliases.append(a) }
+                    newAlias = ""
+                }
+            if let ex = s.excluded, !ex.isEmpty {
+                Text("Nie zuordnen").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
+                ForEach(ex, id: \.self) { name in
+                    HStack {
+                        Text(name).strikethrough().foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            guard let i = model.library.suppliers.firstIndex(where: { $0.id == id }) else { return }
+                            model.library.suppliers[i].excluded?.removeAll { $0 == name }
+                        } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.borderless)
+                        .help("Wieder als möglichen Treffer vorschlagen")
+                    }
                 }
             }
         }

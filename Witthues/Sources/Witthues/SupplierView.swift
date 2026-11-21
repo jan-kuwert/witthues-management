@@ -147,6 +147,8 @@ struct SupplierView: View {
                         Spacer()
                         Button("Zu „\(a.name)“") { merge([a.id, b.id], into: a.id) }
                         Button("Zu „\(b.name)“") { merge([a.id, b.id], into: b.id) }
+                        Button("Verschieden") { model.library.keepApart(a.id, b.id) }
+                            .help("Zwei verschiedene Firmen; nicht mehr vorschlagen")
                     }
                     .buttonStyle(.glass)
                     .controlSize(.small)

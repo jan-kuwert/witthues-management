@@ -643,6 +643,13 @@ struct InvoiceDetail: View {
                     saveIfChanged()
                 }
                 .buttonStyle(.link)
+                .help("„\(s.name)“ eintragen; die gelesene Schreibweise wird künftig automatisch zugeordnet")
+                Button("Anderer") {
+                    saveIfChanged()
+                    model.library.rejectMatch(id, supplier: s.id)
+                }
+                .buttonStyle(.link)
+                .help("Ist ein anderer Lieferant: wird als eigener Lieferant angelegt und nie wieder mit „\(s.name)“ verwechselt")
             }
             .font(.caption)
             .help("Gibt es diesen Lieferanten schon unter anderem Namen? „Übernehmen“ setzt den bekannten Namen ein.")

@@ -390,6 +390,7 @@ public final class Library {
                        archive: Bool = false) throws {
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         var r = records[i]
+        let old = r.fields
         // A paid invoice without a known payment date keeps having none.
         let newPaid = status == .paid ? (paidDate ?? r.paidDate ?? (r.status == .paid ? nil : Date())) : nil
         let o = organizer
@@ -401,7 +402,6 @@ public final class Library {
         let url = try o.place(r.fileURL, fields: fields, stage: stage, paidDate: newPaid, name: cleanName, keepFolder: keep)
         r.inPlace = keep ? true : nil
         // A company name the user typed or kept becomes a known supplier.
-        if r.fields.seller != fields.seller { register(fields.seller) }
         if r.fields != fields {
             r.source = .manual
             r.reviewReasons = Extractor.check(fields)
@@ -414,6 +414,8 @@ public final class Library {
         r.customName = cleanName
         r.archived = inArchive
         records[i] = r
+        // A company name the user typed or picked is learnt: it becomes or joins a known supplier.
+        if old.seller != fields.seller { learnSupplier(from: old.seller, to: fields.seller) }
         save()
     }
 
@@ -490,6 +492,47 @@ public final class Library {
     }
 
     static let similarSupplierPrefix = "Lieferant ähnlich wie „"
+
+    /// The user changed an invoice's company from the read name to another. The new name becomes a known supplier;
+    /// the read name becomes another spelling of it, so the next invoice matches by itself. A supplier the app created
+    /// for the read name goes away when no other invoice uses it.
+    func learnSupplier(from old: String, to new: String) {
+        let old = old.trimmingCharacters(in: .whitespacesAndNewlines)
+        register(new)
+        guard case .exact(let target) = suppliers.match(new), !old.isEmpty, !OwnCompany.isOwn(old),
+              !target.keys.contains(Supplier.key(old)) else { return }
+        var names = [old]
+        if case .exact(let created) = suppliers.match(old) {
+            // A real supplier of other invoices stays as it is; only this invoice moved.
+            guard records.allSatisfy({ $0.fileMissing || !created.keys.contains(Supplier.key($0.fields.seller)) }) else { return }
+            names = [created.name] + created.aliases
+            suppliers.removeAll { $0.id == created.id }
+        }
+        guard let t = suppliers.firstIndex(where: { $0.id == target.id }) else { return }
+        suppliers[t].aliases = Self.unique(suppliers[t].aliases + names).filter { $0 != suppliers[t].name }
+        suppliers[t].excluded?.removeAll { ex in names.contains { Supplier.key($0) == Supplier.key(ex) } }
+    }
+
+    /// The user said the invoice's company is not the suggested supplier: it is its own supplier, and the two names
+    /// are never matched again.
+    public func rejectMatch(_ id: InvoiceRecord.ID, supplier: Supplier.ID) {
+        guard let i = records.firstIndex(where: { $0.id == id }),
+              let s = suppliers.firstIndex(where: { $0.id == supplier }) else { return }
+        let name = records[i].fields.seller.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        suppliers[s].excluded = Self.unique((suppliers[s].excluded ?? []) + [name])
+        register(name)
+        records[i].reviewReasons.removeAll { $0.hasPrefix(Self.similarSupplierPrefix) }
+        save()
+    }
+
+    /// Two suppliers the list suggested merging are different companies.
+    public func keepApart(_ a: Supplier.ID, _ b: Supplier.ID) {
+        guard let i = suppliers.firstIndex(where: { $0.id == a }), let j = suppliers.firstIndex(where: { $0.id == b }) else { return }
+        let (na, nb) = (suppliers[i].name, suppliers[j].name)
+        suppliers[i].excluded = Self.unique((suppliers[i].excluded ?? []) + [nb])
+        suppliers[j].excluded = Self.unique((suppliers[j].excluded ?? []) + [na])
+    }
 
     /// Adds the name as a supplier unless it, or a spelling of it, is known.
     func register(_ name: String) {

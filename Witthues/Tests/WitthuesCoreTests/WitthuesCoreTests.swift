@@ -565,6 +565,45 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(list.match("Papierwerk Lahr") == .none)
     }
 
+    @Test func correctionsAreLearnt() async throws {
+        func setup(_ suppliers: [Supplier]) async throws -> (Library, InvoiceRecord) {
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let lib = Library(directory: tmp.appendingPathComponent("data"))
+            lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
+            lib.suppliers = suppliers
+            let out = try await lib.ingest(data: try fixture("german.pdf"), fileName: "r.pdf", origin: MailOrigin(),
+                                           extractor: Extractor(useAppleIntelligence: false))
+            guard case .filed(let r) = out else { throw CancellationError() }
+            return (lib, r)
+        }
+        func setSeller(_ lib: Library, _ r: InvoiceRecord, _ name: String) throws {
+            var f = r.fields
+            f.seller = name
+            try lib.update(r.id, fields: f, status: r.status, paidDate: r.paidDate)
+        }
+
+        // A close match taken over: the read spelling now matches by itself.
+        var (lib, r) = try await setup([Supplier(name: "Beispiel Druckerej")])
+        #expect(r.reviewReasons.contains { $0.hasPrefix("Lieferant ähnlich") })
+        try setSeller(lib, r, "Beispiel Druckerej")
+        #expect(lib.suppliers.count == 1 && lib.suppliers[0].aliases == ["Beispiel Druckerei GmbH"])
+        #expect(lib.suppliers.match("Beispiel Druckerei GmbH") == .exact(lib.suppliers[0]))
+
+        // A supplier the app created for the read name goes away when the invoice moves to an existing one.
+        (lib, r) = try await setup([Supplier(name: "Druckhaus Nord")])
+        #expect(lib.suppliers.map(\.name).sorted() == ["Beispiel Druckerei GmbH", "Druckhaus Nord"])
+        try setSeller(lib, r, "Druckhaus Nord")
+        #expect(lib.suppliers.map(\.name) == ["Druckhaus Nord"] && lib.suppliers[0].aliases == ["Beispiel Druckerei GmbH"])
+
+        // A rejected match: its own supplier, and never suggested again.
+        (lib, r) = try await setup([Supplier(name: "Beispiel Druckerej")])
+        let other = lib.suppliers[0]
+        lib.rejectMatch(r.id, supplier: other.id)
+        #expect(lib.suppliers.count == 2 && lib.records[0].reviewReasons.allSatisfy { !$0.hasPrefix("Lieferant ähnlich") })
+        #expect(lib.suppliers.filter { $0.id == other.id }.match("Beispiel Druckerei GmbH") == .none)
+        #expect(lib.suppliers.similarPairs().isEmpty)
+    }
+
     @Test func ownCompanyIsNeverTheSupplier() throws {
         // The receiver's block comes first, as on many invoices; the supplier and its address come after it.
         let text = """
