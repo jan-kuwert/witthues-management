@@ -48,15 +48,30 @@ public enum Updates {
                        download: asset.browser_download_url, page: a.html_url)
     }
 
+    /// The newest release. The version comes from where github.com/…/releases/latest leads, which has no rate
+    /// limit; the notes come from the GitHub API when it answers (60 requests an hour per network).
     public static func latest() async throws -> Release {
-        var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repository)/releases/latest")!)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if status == 404 { throw UpdateError("Auf GitHub gibt es noch keine Version.") }
-        guard status == 200 else { throw UpdateError("GitHub antwortet nicht (\(status)).") }
-        return try parse(data)
+        var head = URLRequest(url: URL(string: "https://github.com/\(repository)/releases/latest")!)
+        head.httpMethod = "HEAD"
+        head.cachePolicy = .reloadIgnoringLocalCacheData
+        let (_, response) = try await URLSession.shared.data(for: head)
+        guard let page = response.url, (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw UpdateError("GitHub ist nicht erreichbar.")
+        }
+        guard page.deletingLastPathComponent().lastPathComponent == "tag", let version = version(tag: page.lastPathComponent) else {
+            throw UpdateError("Auf GitHub gibt es noch keine Version.")
+        }
+        var release = Release(version: version, notes: "", published: nil,
+                              download: URL(string: "https://github.com/\(repository)/releases/download/v\(version)/\(assetName)")!,
+                              page: page)
+        var api = URLRequest(url: URL(string: "https://api.github.com/repos/\(repository)/releases/tags/v\(version)")!)
+        api.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        if let (data, r) = try? await URLSession.shared.data(for: api), (r as? HTTPURLResponse)?.statusCode == 200,
+           let details = try? parse(data), details.version == version {
+            release.notes = details.notes
+            release.published = details.published
+        }
+        return release
     }
 
     /// Where a downloaded update waits until it is installed: on quitting, on the next start, or right away.

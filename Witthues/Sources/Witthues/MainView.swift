@@ -71,6 +71,18 @@ struct MainView: View {
             }
         }
         .toolbar {
+            if model.showsUpdateNotice {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        if (model.downloadedVersion ?? 0) > model.currentVersion { model.askingInstall = true } else { model.downloadUpdate() }
+                    } label: {
+                        Label("Update", systemImage: "arrow.down.circle.fill")
+                    }
+                    .tint(.blue)
+                    .disabled(model.isDownloadingUpdate)
+                    .help("Neue Version \(model.latestRelease?.version ?? model.downloadedVersion ?? 0) herunterladen und installieren")
+                }
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     adding = AddRequest()

@@ -72,10 +72,8 @@ struct UpdateNotice: View {
                 if model.isDownloadingUpdate {
                     ProgressView().progressViewStyle(.linear)
                 } else if ready {
-                    HStack {
-                        Button("Jetzt installieren") { model.installNow() }.buttonStyle(.glassProminent)
-                        Text("sonst beim nächsten Start").font(.caption).foregroundStyle(.secondary)
-                    }
+                    Button("Jetzt installieren") { model.installNow() }.buttonStyle(.glassProminent)
+                    Text("Sonst beim nächsten Start").font(.caption).foregroundStyle(.secondary)
                 } else {
                     Button("Herunterladen") { model.downloadUpdate() }.buttonStyle(.glassProminent)
                 }
