@@ -11,8 +11,8 @@ struct AddRequest: Identifiable {
 }
 
 /// Adds invoices by hand: from Photos, scanned with the iPhone camera, from files and folders, or dropped on the
-/// window or this sheet. The files are listed first; „Importieren“ reads them like mail attachments and files them
-/// into the folder of the chosen stage, and each row then shows what came out.
+/// window or this sheet. The files are listed first; „Importieren“ closes the sheet and reads them in the background
+/// like mail attachments, filing them into the folder of the chosen stage.
 struct AddInvoiceSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -24,25 +24,19 @@ struct AddInvoiceSheet: View {
     @State private var pickingFiles = false
     @State private var scanRequest = 0
     @State private var items: [Item] = []
-    @State private var working = false
     @State private var dropTargeted = false
 
     struct Item: Identifiable {
         let id = UUID()
         var name: String
         var data: Data
-        var running = false
-        /// nil until imported.
-        var result: AppModel.AddResult?
     }
-
-    private var pending: [Item] { items.filter { $0.result == nil } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Rechnung hinzufügen").font(.title2.weight(.semibold))
             Text("Als was soll die Rechnung importiert werden?").font(.headline)
-            StagePicker(stage: $stage).disabled(working)
+            StagePicker(stage: $stage)
             Text("Die Rechnung wird gelesen, umbenannt und im Ordner „\(model.library.settings.folderTemplate(stage))“ abgelegt.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -51,7 +45,6 @@ struct AddInvoiceSheet: View {
                     Toggle("Bezahlt am", isOn: $withDate)
                     DatePicker("Bezahlt am", selection: $paidDate, displayedComponents: .date).labelsHidden().disabled(!withDate)
                 }
-                .disabled(working)
             }
             HStack(spacing: 12) {
                 PhotosPicker(selection: $photos, matching: .images) {
@@ -72,22 +65,18 @@ struct AddInvoiceSheet: View {
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
             }
-            .disabled(working)
             fileList
             HStack {
-                if !items.isEmpty, !working, pending.isEmpty {
-                    Text(summary).font(.callout).foregroundStyle(.secondary)
+                if !items.isEmpty {
+                    Text("Läuft im Hintergrund; der Fortschritt steht unten in der Seitenleiste.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if pending.isEmpty {
-                    Button("Fertig") { dismiss() }.keyboardShortcut(.defaultAction).disabled(working)
-                } else {
-                    Button("Abbrechen", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
-                    Button(pending.count == 1 ? "1 Datei importieren" : "\(pending.count) Dateien importieren") { run() }
-                        .buttonStyle(.glassProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(working)
-                }
+                Button("Abbrechen", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(items.count == 1 ? "1 Datei importieren" : "\(items.count) Dateien importieren") { run() }
+                    .buttonStyle(.glassProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(items.isEmpty)
             }
         }
         .padding(22)
@@ -125,7 +114,7 @@ struct AddInvoiceSheet: View {
         }
     }
 
-    /// The chosen files, waiting or with what came out of each.
+    /// The chosen files, waiting to be imported.
     @ViewBuilder private var fileList: some View {
         if items.isEmpty {
             Label("Noch keine Datei gewählt. Dateien lassen sich auch hierher ziehen.", systemImage: "tray.and.arrow.down")
@@ -152,61 +141,15 @@ struct AddInvoiceSheet: View {
             Image(systemName: Self.symbol(item.name)).foregroundStyle(.secondary).frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.name).lineLimit(1).truncationMode(.middle)
-                detail(item).font(.caption).lineLimit(1)
+                Text(ByteCountFormatter.string(fromByteCount: Int64(item.data.count), countStyle: .file))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 6)
-            if item.running {
-                ProgressView().controlSize(.small)
-            } else if let result = item.result {
-                switch result {
-                case .filed(let r):
-                    Image(systemName: r.needsReview ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(r.needsReview ? .orange : .green)
-                case .duplicate: Image(systemName: "equal.circle.fill").foregroundStyle(.blue)
-                case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-                }
-            } else {
-                Button { items.removeAll { $0.id == item.id } } label: { Image(systemName: "minus.circle") }
-                    .buttonStyle(.borderless)
-                    .disabled(working)
-                    .help("Aus der Liste nehmen")
-            }
+            Button { items.removeAll { $0.id == item.id } } label: { Image(systemName: "minus.circle") }
+                .buttonStyle(.borderless)
+                .help("Aus der Liste nehmen")
         }
         .padding(.vertical, 6)
-    }
-
-    @ViewBuilder private func detail(_ item: Item) -> some View {
-        switch item.result {
-        case nil:
-            Text(item.running ? "Wird gelesen …" : "Bereit · \(ByteCountFormatter.string(fromByteCount: Int64(item.data.count), countStyle: .file))")
-                .foregroundStyle(.secondary)
-        case .filed(let r)?:
-            let company = r.fields.seller.isEmpty ? "Unbekannte Firma" : r.fields.seller
-            let amount = r.fields.total.map { " · " + MenuBarView.money($0, r.fields.currency) } ?? ""
-            Text("\(company)\(amount) · unter „\(r.stage.label)“" + (r.needsReview ? " · bitte prüfen" : ""))
-                .foregroundStyle(r.needsReview ? .orange : .secondary)
-        case .duplicate?:
-            Text("War schon vorhanden, nicht doppelt abgelegt").foregroundStyle(.blue)
-        case .failed(let message)?:
-            Text(message).foregroundStyle(.red)
-        }
-    }
-
-    private var summary: String {
-        var filed = 0, duplicates = 0, failed = 0
-        for item in items {
-            switch item.result {
-            case .filed?: filed += 1
-            case .duplicate?: duplicates += 1
-            case .failed?: failed += 1
-            case nil: break
-            }
-        }
-        var parts: [String] = []
-        if filed > 0 { parts.append(filed == 1 ? "1 abgelegt" : "\(filed) abgelegt") }
-        if duplicates > 0 { parts.append("\(duplicates) schon vorhanden") }
-        if failed > 0 { parts.append("\(failed) nicht lesbar") }
-        return parts.joined(separator: " · ")
     }
 
     private static func symbol(_ name: String) -> String {
@@ -222,38 +165,10 @@ struct AddInvoiceSheet: View {
         items += files.map { Item(name: $0.1, data: $0.0) }
     }
 
-    /// Imports the waiting files one after another, so each row shows its result as soon as it has one.
+    /// Hands the files to the background import and closes the sheet.
     private func run() {
-        working = true
-        let date = stage != .open && withDate ? paidDate : nil
-        let chosen = stage
-        Task {
-            let ids = pending.map(\.id)
-            // Also shown at the bottom of the sidebar, unless a mail check is using it.
-            let showsProgress = !model.isChecking
-            var p = MailProgress(step: "Dateien werden importiert …")
-            p.unit = "Datei"
-            p.total = ids.count
-            for (n, id) in ids.enumerated() {
-                guard let i = items.firstIndex(where: { $0.id == id }) else { continue }
-                items[i].running = true
-                p.current = n + 1
-                p.subject = items[i].name
-                if showsProgress { model.progress = p }
-                let result = await model.importFile(items[i].data, name: items[i].name, stage: chosen, paidOn: date)
-                switch result {
-                case .filed: p.summary.filed += 1
-                case .duplicate: p.summary.duplicates += 1
-                case .failed(let e): p.summary.errors.append(e)
-                }
-                if let i = items.firstIndex(where: { $0.id == id }) {
-                    items[i].running = false
-                    items[i].result = result
-                }
-            }
-            if showsProgress { model.progress = nil }
-            working = false
-        }
+        model.startAdding(items.map { ($0.data, $0.name) }, stage: stage, paidDate: stage != .open && withDate ? paidDate : nil)
+        dismiss()
     }
 
     private func tile(_ title: String, _ icon: String, _ detail: String) -> some View {

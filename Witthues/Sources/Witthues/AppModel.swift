@@ -147,6 +147,45 @@ final class AppModel {
         }
     }
 
+    /// Imports run one after another, each after the one before.
+    private var addTask: Task<Void, Never>?
+
+    /// Imports files added by hand in the background, so the app stays usable. Progress, the result and errors
+    /// show at the bottom of the sidebar.
+    func startAdding(_ files: [(data: Data, name: String)], stage: Stage, paidDate: Date?) {
+        guard !files.isEmpty else { return }
+        let previous = addTask
+        addTask = Task {
+            await previous?.value
+            // Waits for a running mail check, then keeps the next one from starting until the files are filed.
+            while isChecking { try? await Task.sleep(for: .milliseconds(500)) }
+            isChecking = true
+            defer { isChecking = false; progress = nil }
+            var p = MailProgress(step: "Dateien werden importiert …")
+            p.unit = "Datei"
+            p.total = files.count
+            for (n, file) in files.enumerated() {
+                p.current = n + 1
+                p.subject = file.name
+                progress = p
+                switch await importFile(file.data, name: file.name, stage: stage, paidOn: paidDate) {
+                case .filed: p.summary.filed += 1
+                case .duplicate: p.summary.duplicates += 1
+                case .failed(let e): p.summary.errors.append("\(file.name): \(e)")
+                }
+                progress = p
+            }
+            let s = p.summary
+            lastResult = [s.filed == 1 ? "1 Rechnung hinzugefügt" : "\(s.filed) Rechnungen hinzugefügt",
+                          s.duplicates > 0 ? "\(s.duplicates) schon vorhanden" : nil].compactMap { $0 }.joined(separator: " · ")
+            lastCheck = Date()
+            // With errors, the line says what worked too; the tooltip has every error.
+            lastError = s.errors.isEmpty ? nil
+                : lastResult + " · " + (s.errors.count == 1 ? "1 Datei nicht importiert: " : "\(s.errors.count) Dateien nicht importiert: ")
+                    + s.errors.joined(separator: "; ")
+        }
+    }
+
     var unpaidCount: Int { library.liveRecords.filter { $0.status == .unpaid }.count }
 
     // MARK: - Start at login

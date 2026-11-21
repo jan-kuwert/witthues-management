@@ -159,7 +159,7 @@ struct StatusLine: View {
                 Text(model.progress.map(\.text).flatMap { $0.isEmpty ? nil : $0 } ?? "Mails werden abgerufen …")
             } else if let error = model.lastError {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(error).lineLimit(3)
+                Text(error).lineLimit(3).help(error)
             } else if let last = model.lastCheck {
                 Image(systemName: "checkmark.circle").foregroundStyle(.green)
                 Text("\(model.lastResult) · \(last.formatted(date: .omitted, time: .shortened))")

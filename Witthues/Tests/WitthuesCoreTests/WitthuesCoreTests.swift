@@ -152,16 +152,25 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(lib.records.count == 1)
     }
 
-    @Test func fileAlreadyInFoldersIsNotFiledAgain() async throws {
+    @Test func fileAlreadyInFoldersGetsAnEntryButNoCopy() async throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let lib = Library(directory: tmp.appendingPathComponent("data"))
         let root = tmp.appendingPathComponent("Rechnungen")
         lib.settings.rootFolder = root.path
         let ex = Extractor(useAppleIntelligence: false)
-        // Put there by hand under another name, unknown to the app.
-        try FileManager.default.createDirectory(at: root.appendingPathComponent("2025-12"), withIntermediateDirectories: true)
-        try fixture("german.pdf").write(to: root.appendingPathComponent("2025-12/alt.pdf"))
-        #expect(try await lib.ingest(data: try fixture("german.pdf"), fileName: "r.pdf", origin: MailOrigin(), extractor: ex) == .duplicate)
+        // Put into the unpaid folder by hand under another name, unknown to the app, then imported.
+        let open = root.appendingPathComponent("00 Offen")
+        try FileManager.default.createDirectory(at: open, withIntermediateDirectories: true)
+        let file = open.appendingPathComponent("alt.pdf")
+        try fixture("german.pdf").write(to: file)
+        let first = try await lib.ingest(data: try fixture("german.pdf"), fileName: "alt.pdf", origin: MailOrigin(), extractor: ex)
+        guard case .filed(let r) = first else { Issue.record("an unknown file in the folders must get an entry: \(first)"); return }
+        // The entry points at the file where it lies; no second copy, no rename.
+        #expect(r.filePath == file.standardizedFileURL.path)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: open.path) == ["alt.pdf"])
+        // Now it is known, so importing it again adds nothing.
+        #expect(try await lib.ingest(data: try fixture("german.pdf"), fileName: "alt.pdf", origin: MailOrigin(), extractor: ex) == .duplicate)
+        #expect(lib.records.count == 1)
         guard case .filed = try await lib.ingest(data: try fixture("english.pdf"), fileName: "e.pdf", origin: MailOrigin(), extractor: ex)
         else { Issue.record("a new invoice must still be filed"); return }
     }

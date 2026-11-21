@@ -131,13 +131,32 @@ public final class Library {
         }
         guard settings.isFolderConfigured else { throw IMAPError(message: "Bitte zuerst den Hauptordner in den Einstellungen wählen") }
         matchSupplier(&x.fields, &x.reviewReasons)
-        // The same file may already lie in the folders, put there by hand or before the app existed.
-        if copyInMainFolder(of: data) != nil { return .duplicate }
         let paid = stage == .open ? nil : paidDate
         // Without an invoice date the archive folder would be "YYYY-MM"; a known payment date stands in, to be checked.
         if x.fields.invoiceDate == nil, let paid {
             x.fields.invoiceDate = Calendar.current.startOfDay(for: paid)
             x.reviewReasons = x.reviewReasons.filter { $0 != "Kein Rechnungsdatum gefunden" } + ["Kein Rechnungsdatum gefunden, Zahlungsdatum verwendet"]
+        }
+        // The same file may already lie in the folders, put there by hand or before the app existed. It is never
+        // saved twice: without an entry in the app it gets one where it lies, and the file stays as it is.
+        if let existing = copyInMainFolder(of: data) {
+            let path = existing.standardizedFileURL.path
+            if records.contains(where: { URL(fileURLWithPath: $0.filePath).standardizedFileURL.path == path && !$0.fileMissing }) {
+                return .duplicate
+            }
+            ignoredFiles.remove(path)
+            skipped.removeAll { $0.inPlace == true && $0.storedPath == path }
+            var record = InvoiceRecord(fields: x.fields, source: x.source, reviewReasons: x.reviewReasons,
+                                       status: stage == .open ? .unpaid : .paid, paidDate: paid,
+                                       filePath: path, origin: origin, sha256: hash)
+            record.archived = stage == .archived
+            record.inPlace = true
+            record.customName = existing.deletingPathExtension().lastPathComponent
+            record.bookmark = Self.bookmark(existing)
+            record.termsRead = true
+            records.insert(record, at: 0)
+            save()
+            return .filed(record)
         }
         let url = try organizer.save(data, ext: Self.ext(fileName), fields: x.fields, stage: stage, paidDate: paid)
         if let (xml, _) = companionXML {
