@@ -11,7 +11,6 @@ struct ArchiveRow: Identifiable {
     let paidDate: Date
     let invoiceNumber: String
     let company: String
-    let buyer: String
     let amount: Double
     let currency: String
     let source: String
@@ -34,7 +33,6 @@ struct ArchiveRow: Identifiable {
         paidDate = r.paidDate ?? Self.noDate
         invoiceNumber = r.fields.invoiceNumber
         company = r.fields.seller
-        buyer = r.fields.buyer
         amount = r.fields.total.map { NSDecimalNumber(decimal: $0).doubleValue } ?? 0
         currency = r.fields.currency
         source = r.source.label
@@ -141,11 +139,11 @@ struct ArchiveView: View {
     /// Column IDs and titles, for the Columns menu.
     static let columnTitles: [(id: String, title: String)] = [
         ("file", "Dateiname"), ("folder", "Ordner"), ("date", "Rechnungsdatum"), ("status", "Status"), ("paid", "Bezahlt am"),
-        ("number", "Rechnungsnummer"), ("company", "Firma"), ("buyer", "Empfänger"), ("amount", "Betrag"),
+        ("number", "Rechnungsnummer"), ("company", "Firma"), ("amount", "Betrag"),
         ("currency", "Währung"), ("source", "Gelesen aus"), ("check", "Prüfen"), ("subject", "Mail-Betreff"), ("imported", "Importiert"), ("printed", "Gedruckt"),
     ]
     /// Shown until the user changes the columns.
-    static let defaultHidden: Set<String> = ["buyer", "currency", "source", "check", "subject", "imported"]
+    static let defaultHidden: Set<String> = ["currency", "source", "check", "subject", "imported"]
 
     var body: some View {
         if let opened, model.library.records.contains(where: { $0.id == opened }) {
@@ -298,9 +296,6 @@ struct ArchiveView: View {
     }
 
     @Columns private var moreColumns: some TableColumnContent<ArchiveRow, KeyPathComparator<ArchiveRow>> {
-        TableColumn("Empfänger", value: \.buyer)
-            .width(min: 90, ideal: 140)
-            .customizationID("buyer")
         TableColumn("Betrag", value: \.amount) { r in
             Text(r.record.fields.total.map { MenuBarView.money($0, r.currency) } ?? "–")
                 .monospacedDigit()
@@ -341,7 +336,7 @@ struct ArchiveView: View {
         let q = filter.search.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
             rows = rows.filter { r in
-                [r.fileName, r.company, r.buyer, r.invoiceNumber, r.subject, r.folder,
+                [r.fileName, r.company, r.invoiceNumber, r.subject, r.folder,
                  String(format: "%.2f", r.amount), String(format: "%.2f", r.amount).replacingOccurrences(of: ".", with: ",")]
                     .contains { $0.lowercased().contains(q) }
             }

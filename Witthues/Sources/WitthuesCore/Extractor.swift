@@ -51,7 +51,9 @@ public struct Extractor: Sendable {
         guard lower.hasSuffix(".pdf") || data.starts(with: Array("%PDF".utf8)) else {
             return notInvoice("Kein PDF")
         }
-        if let xml = EInvoice.xml(inPDF: data), let f = EInvoice.parse(xml: xml) {
+        if let xml = EInvoice.xml(inPDF: data), var f = EInvoice.parse(xml: xml) {
+            // Skonto is often only in the printed text, not in the XML.
+            f.terms = Self.terms(xml: f.terms, text: Self.pdfText(data))
             return Extraction(isInvoice: true, notInvoiceReason: "", fields: f, source: .eInvoiceXML,
                               reviewReasons: Self.check(f), xmlOnly: false)
         }
@@ -101,8 +103,21 @@ public struct Extractor: Sendable {
             reasons.append("Firmenname aus dem Briefkopf geraten")
         }
         reasons += Self.check(fields)
+        fields.terms = PaymentTerms.parse(text)
         return Extraction(isInvoice: true, notInvoiceReason: "", fields: fields, source: source,
                           reviewReasons: reasons, xmlOnly: false)
+    }
+
+    static func terms(xml: PaymentTerms?, text: String) -> PaymentTerms? {
+        let fromText = PaymentTerms.parse(text)
+        return xml.map { $0.merged(with: fromText) } ?? fromText
+    }
+
+    /// Payment terms of a filed file (PDF text and embedded XML, no OCR), for invoices read before terms existed.
+    public static func terms(ofFile url: URL) -> PaymentTerms? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if url.pathExtension.lowercased() == "xml" { return EInvoice.parse(xml: data)?.terms }
+        return terms(xml: EInvoice.xml(inPDF: data).flatMap(EInvoice.parse)?.terms, text: pdfText(data))
     }
 
     private func notInvoice(_ reason: String) -> Extraction {

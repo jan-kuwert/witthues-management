@@ -121,6 +121,8 @@ public final class Library {
             return .skipped(s)
         }
         guard settings.isFolderConfigured else { throw IMAPError(message: "Bitte zuerst den Hauptordner in den Einstellungen wählen") }
+        // The same file may already lie in the folders, put there by hand or before the app existed.
+        if copyInMainFolder(of: data) != nil { return .duplicate }
         let paid = stage == .open ? nil : paidDate
         // Without an invoice date the archive folder would be "YYYY-MM"; a known payment date stands in, to be checked.
         if x.fields.invoiceDate == nil, let paid {
@@ -136,9 +138,22 @@ public final class Library {
                                    filePath: url.path, origin: origin, sha256: hash)
         record.archived = stage == .archived
         record.bookmark = Self.bookmark(url)
+        record.termsRead = true
         records.insert(record, at: 0)
         save()
         return .filed(record)
+    }
+
+    /// A file anywhere in the main folder with exactly these bytes. Only files of the same size are read.
+    public func copyInMainFolder(of data: Data) -> URL? {
+        guard let e = FileManager.default.enumerator(at: organizer.rootURL, includingPropertiesForKeys: [.fileSizeKey],
+                                                     options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return nil }
+        for case let url as URL in e {
+            guard (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) == data.count,
+                  let other = try? Data(contentsOf: url, options: .mappedIfSafe), other == data else { continue }
+            return url
+        }
+        return nil
     }
 
     // MARK: - Existing folders
@@ -148,7 +163,9 @@ public final class Library {
     /// Adds an invoice PDF that already lies in a folder with the stage the user chose, without moving or
     /// renaming it, so invoices filed before the app count in the lists and statistics. The fields are read
     /// like a mail attachment; what the app is unsure about is marked for checking.
-    public func indexExisting(_ url: URL, stage: Stage, paidDate: Date? = nil, extractor: Extractor) async throws -> ExistingFile {
+    /// `force` adds it even when the checks say it is no invoice (the user said it is one).
+    public func indexExisting(_ url: URL, stage: Stage, paidDate: Date? = nil, extractor: Extractor,
+                              force: Bool = false) async throws -> ExistingFile {
         let path = url.standardizedFileURL.path
         if records.contains(where: { URL(fileURLWithPath: $0.filePath).standardizedFileURL.path == path }) { return .known }
         let data = try Data(contentsOf: url)
@@ -166,8 +183,15 @@ public final class Library {
             return .known
         }
         let x = await extractor.extract(data: data, fileName: url.lastPathComponent, subject: "", sender: "")
-        guard x.isInvoice else {
+        guard x.isInvoice || force else {
             ignoredFiles.insert(path)
+            // Listed under „Keine Rechnungen“, where it can still be declared an invoice.
+            if !skipped.contains(where: { $0.storedPath == path }) {
+                var s = SkippedAttachment(origin: MailOrigin(subject: "Aus vorhandenem Ordner", attachmentName: url.lastPathComponent),
+                                          reason: x.notInvoiceReason, storedPath: path)
+                s.inPlace = true
+                skipped.insert(s, at: 0)
+            }
             save()
             return .notInvoice
         }
@@ -179,6 +203,7 @@ public final class Library {
         record.inPlace = true
         record.customName = url.deletingPathExtension().lastPathComponent
         record.bookmark = Self.bookmark(url)
+        record.termsRead = true
         records.insert(record, at: 0)
         save()
         return .added
@@ -293,6 +318,14 @@ public final class Library {
     /// Files a skipped attachment as an invoice after all.
     public func importSkipped(_ id: SkippedAttachment.ID, stage: Stage = .open, paidDate: Date? = nil, extractor: Extractor) async throws {
         guard let s = skipped.first(where: { $0.id == id }) else { return }
+        // A file from the user's folders is added where it lies, never moved or deleted.
+        if s.inPlace == true {
+            ignoredFiles.remove(s.storedPath)
+            _ = try await indexExisting(URL(fileURLWithPath: s.storedPath), stage: stage, paidDate: paidDate, extractor: extractor, force: true)
+            skipped.removeAll { $0.id == id }
+            save()
+            return
+        }
         let data = try Data(contentsOf: URL(fileURLWithPath: s.storedPath))
         let outcome = try await ingest(data: data, fileName: s.origin.attachmentName, origin: s.origin, extractor: extractor, force: true,
                                        stage: stage, paidDate: paidDate)
@@ -303,9 +336,10 @@ public final class Library {
         }
     }
 
+    /// Forgets a skipped attachment. Its stored copy is deleted; a file in the user's folders stays.
     public func deleteSkipped(_ id: SkippedAttachment.ID) {
         guard let s = skipped.first(where: { $0.id == id }) else { return }
-        try? FileManager.default.removeItem(atPath: s.storedPath)
+        if s.inPlace != true { try? FileManager.default.removeItem(atPath: s.storedPath) }
         skipped.removeAll { $0.id == id }
         save()
     }
@@ -364,6 +398,19 @@ public final class Library {
             guard let r = records.first(where: { $0.id == id }), r.stage == .paid else { continue }
             try update(id, fields: r.fields, status: .paid, paidDate: r.paidDate, name: r.customName, archive: true)
         }
+    }
+
+    /// Looks for payment terms in invoices filed before the app read them, once per invoice.
+    public func readMissingTerms() async {
+        let todo = records.filter { $0.termsRead != true && !$0.fileMissing }.map { ($0.id, $0.fileURL) }
+        guard !todo.isEmpty else { return }
+        for (id, url) in todo {
+            let terms = await Task.detached { Extractor.terms(ofFile: url) }.value
+            guard let i = records.firstIndex(where: { $0.id == id }) else { continue }
+            if records[i].fields.terms == nil { records[i].fields.terms = terms }
+            records[i].termsRead = true
+        }
+        save()
     }
 
     /// Marks invoices as printed (on paper) or not.

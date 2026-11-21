@@ -228,15 +228,30 @@ struct AddInvoiceSheet: View {
         let date = stage != .open && withDate ? paidDate : nil
         let chosen = stage
         Task {
-            for id in pending.map(\.id) {
+            let ids = pending.map(\.id)
+            // Also shown at the bottom of the sidebar, unless a mail check is using it.
+            let showsProgress = !model.isChecking
+            var p = MailProgress(step: "Dateien werden importiert …")
+            p.unit = "Datei"
+            p.total = ids.count
+            for (n, id) in ids.enumerated() {
                 guard let i = items.firstIndex(where: { $0.id == id }) else { continue }
                 items[i].running = true
+                p.current = n + 1
+                p.subject = items[i].name
+                if showsProgress { model.progress = p }
                 let result = await model.importFile(items[i].data, name: items[i].name, stage: chosen, paidOn: date)
+                switch result {
+                case .filed: p.summary.filed += 1
+                case .duplicate: p.summary.duplicates += 1
+                case .failed(let e): p.summary.errors.append(e)
+                }
                 if let i = items.firstIndex(where: { $0.id == id }) {
                     items[i].running = false
                     items[i].result = result
                 }
             }
+            if showsProgress { model.progress = nil }
             working = false
         }
     }

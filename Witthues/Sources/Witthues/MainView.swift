@@ -11,12 +11,26 @@ enum SidebarItem: Hashable {
     case view(SavedView.ID)
 }
 
+/// How the invoice lists are ordered.
+enum InvoiceSort: String, CaseIterable, Identifiable {
+    case skonto, newest, oldest
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .skonto: return "Skonto-Frist (früheste zuerst)"
+        case .newest: return "Rechnungsdatum (neueste zuerst)"
+        case .oldest: return "Rechnungsdatum (älteste zuerst)"
+        }
+    }
+}
+
 struct MainView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
     @State private var sidebar: SidebarItem = .unpaid
     @State private var selection: InvoiceRecord.ID?
     @State private var search = ""
+    @AppStorage("invoiceSort") private var sort: InvoiceSort = .skonto
     @State private var dropTargeted = false
     /// An invoice the dashboard asked to open; selected once the list has switched.
     @State private var pendingOpen: InvoiceRecord.ID?
@@ -218,6 +232,21 @@ struct MainView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 360, ideal: 420)
+            .toolbar {
+                if sidebar != .skipped && sidebar != .deleted {
+                    ToolbarItem {
+                        Menu {
+                            Picker("Sortieren nach", selection: $sort) {
+                                ForEach(InvoiceSort.allCases) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.inline)
+                        } label: {
+                            Label("Sortieren", systemImage: "arrow.up.arrow.down")
+                        }
+                        .help("Sortieren: \(sort.title)")
+                    }
+                }
+            }
             .searchable(text: $search, placement: .toolbar, prompt: "Firma, Nummer, Betrag")
         } detail: {
             if let id = selection, sidebar != .skipped, let r = model.library.records.first(where: { $0.id == id }) {
@@ -303,11 +332,17 @@ struct MainView: View {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
             list = list.filter { r in
-                [r.fields.seller, r.fields.buyer, r.fields.invoiceNumber, r.origin.subject, r.origin.from,
+                [r.fields.seller, r.fields.invoiceNumber, r.origin.subject, r.origin.from,
                  r.fields.total.map { "\($0)" } ?? ""].contains { $0.lowercased().contains(q) }
             }
         }
-        return list.sorted { ($0.fields.invoiceDate ?? $0.importedAt) > ($1.fields.invoiceDate ?? $1.importedAt) }
+        let now = Date()
+        return list.sorted { a, b in
+            // Open invoices with Skonto first, earliest deadline first, so no saving is missed; then by date.
+            if sort == .skonto, let first = InvoiceRecord.bySkontoDeadline(a, b, on: now) { return first }
+            let da = a.fields.invoiceDate ?? a.importedAt, db = b.fields.invoiceDate ?? b.importedAt
+            return sort == .oldest ? da < db : da > db
+        }
     }
 }
 
@@ -336,8 +371,9 @@ struct InvoiceList: View {
     @Binding var selection: InvoiceRecord.ID?
 
     var body: some View {
+        let next = Self.nextSkonto(records)
         List(records, selection: $selection) { r in
-            InvoiceRow(record: r)
+            InvoiceRow(record: r, nextSkonto: r.id == next)
                 .tag(r.id)
                 .contextMenu {
                     Button(r.status == .paid ? "Als offen markieren" : "Als bezahlt markieren") {
@@ -358,8 +394,17 @@ struct InvoiceList: View {
     }
 }
 
+extension InvoiceList {
+    /// The invoice whose Skonto runs out first.
+    static func nextSkonto(_ records: [InvoiceRecord]) -> InvoiceRecord.ID? {
+        records.compactMap { r in r.skontoOffer()?.deadline.map { (r.id, $0) } }.min { $0.1 < $1.1 }?.0
+    }
+}
+
 struct InvoiceRow: View {
     let record: InvoiceRecord
+    /// Highlighted as the Skonto deadline that comes first.
+    var nextSkonto = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -388,12 +433,42 @@ struct InvoiceRow: View {
                 } else if record.stage == .paid {
                     Label(record.printedAt == nil ? "Nicht gedruckt" : "Gedruckt", systemImage: "printer")
                         .font(.caption).foregroundStyle(record.printedAt == nil ? .blue : .secondary).lineLimit(1)
-                } else if record.needsReview {
-                    Text(record.reviewReasons.first ?? "").font(.caption).foregroundStyle(.orange).lineLimit(1)
                 }
+                if let offer = record.skontoOffer() { skonto(offer) }
             }
         }
         .padding(.vertical, 3)
+        .padding(.horizontal, nextSkonto ? 6 : 0)
+        .background {
+            if nextSkonto {
+                RoundedRectangle(cornerRadius: 8).fill(.green.opacity(0.14))
+                    .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(.green.opacity(0.6), lineWidth: 1) }
+            }
+        }
+    }
+
+    private func skonto(_ offer: SkontoOffer) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: nextSkonto ? "clock.badge.exclamationmark.fill" : "percent")
+            // Short enough for the narrow list; the tooltip has the rest.
+            Text("−" + (offer.amount.map { MenuBarView.money($0, record.fields.currency) } ?? PaymentTermsBox.percent(offer.percent))
+                 + (offer.deadline.map { " bis " + $0.formatted(.dateTime.day(.twoDigits).month(.twoDigits)) } ?? ""))
+        }
+        .font(.caption.weight(nextSkonto ? .semibold : .regular))
+        .foregroundStyle(offer.daysLeft().map { $0 <= 2 } == true ? .orange : .green)
+        .lineLimit(1)
+        .help((nextSkonto ? "Früheste Skonto-Frist · " : "") + InvoiceRow.skontoText(offer, currency: record.fields.currency))
+    }
+
+    /// „Skonto 2,40 € bis 03.12. · noch 3 Tage“
+    static func skontoText(_ offer: SkontoOffer, currency: String) -> String {
+        var s = "Skonto " + (offer.amount.map { MenuBarView.money($0, currency) }
+                             ?? "\(NSDecimalNumber(decimal: offer.percent).stringValue.replacingOccurrences(of: ".", with: ",")) %")
+        if let d = offer.deadline {
+            s += " bis " + d.formatted(.dateTime.day(.twoDigits).month(.twoDigits))
+            if let left = offer.daysLeft() { s += " · " + (left == 0 ? "heute" : left == 1 ? "noch 1 Tag" : "noch \(left) Tage") }
+        }
+        return s
     }
 
     private var icon: String {
@@ -456,6 +531,7 @@ struct InvoiceDetail: View {
                         header(record)
                         if !record.reviewReasons.isEmpty { reviewBox(record) }
                         form.disabled(locked)
+                        if let terms = record.fields.terms { PaymentTermsBox(record: record, terms: terms) }
                         filing(record)
                         origin(record)
                     }
@@ -518,8 +594,8 @@ struct InvoiceDetail: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 10) {
-            field("Firma (Absender)", text: $fields.seller)
-            field("Rechnungsnummer", text: $fields.invoiceNumber)
+            field("Firma (Absender)", text: $fields.seller, copy: true)
+            field("Rechnungsnummer", text: $fields.invoiceNumber, copy: true)
             HStack {
                 Toggle("Datum", isOn: $hasDate).toggleStyle(.checkbox)
                 Spacer()
@@ -528,20 +604,22 @@ struct InvoiceDetail: View {
                     .labelsHidden().disabled(!hasDate)
             }
             HStack {
-                field("Betrag", text: $totalText)
+                field("Betrag", text: $totalText, copy: true)
                 field("Währung", text: $fields.currency).frame(width: 80)
             }
-            field("Empfänger", text: $fields.buyer)
         }
         .padding(12)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
     }
 
-    private func field(_ label: String, text: Binding<String>) -> some View {
+    private func field(_ label: String, text: Binding<String>, copy: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label).font(.caption).foregroundStyle(.secondary)
-            // Return saves right away.
-            TextField(label, text: text).textFieldStyle(.roundedBorder).labelsHidden().onSubmit { saveIfChanged() }
+            HStack(spacing: 4) {
+                // Return saves right away.
+                TextField(label, text: text).textFieldStyle(.roundedBorder).labelsHidden().onSubmit { saveIfChanged() }
+                if copy { CopyButton(value: text.wrappedValue, label: label) }
+            }
         }
     }
 
@@ -867,7 +945,7 @@ struct SkippedList: View {
                 Text(s.reason).font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Als Rechnung ablegen …") {
-                        stageRequest = StageRequest(title: "Als Rechnung ablegen", detail: s.origin.attachmentName, inPlace: false) { stage, date in
+                        stageRequest = StageRequest(title: "Als Rechnung ablegen", detail: s.origin.attachmentName, inPlace: s.inPlace == true) { stage, date in
                             Task {
                                 do { try await model.library.importSkipped(s.id, stage: stage, paidDate: date, extractor: model.extractor) }
                                 catch { model.lastError = error.localizedDescription }
@@ -876,7 +954,9 @@ struct SkippedList: View {
                     }
                     .buttonStyle(.glass)
                     Button("Öffnen") { NSWorkspace.shared.open(URL(fileURLWithPath: s.storedPath)) }.buttonStyle(.glass)
-                    Button("Löschen", role: .destructive) { model.library.deleteSkipped(s.id) }.buttonStyle(.glass)
+                    Button(s.inPlace == true ? "Entfernen" : "Löschen", role: .destructive) { model.library.deleteSkipped(s.id) }
+                        .buttonStyle(.glass)
+                        .help(s.inPlace == true ? "Aus der Liste entfernen; die Datei bleibt im Ordner" : "Den gespeicherten Anhang löschen")
                 }
                 .controlSize(.small)
             }
@@ -886,7 +966,7 @@ struct SkippedList: View {
         .overlay {
             if model.library.skipped.isEmpty {
                 ContentUnavailableView("Nichts übersprungen", systemImage: "tray",
-                                       description: Text("PDFs aus Mails, die keine Rechnungen sind, erscheinen hier."))
+                                       description: Text("PDFs aus Mails und Ordnern, die keine Rechnungen sind, erscheinen hier."))
             }
         }
     }
@@ -961,5 +1041,111 @@ extension View {
             .offset(drag.dragging == id ? drag.offset : .zero)
             .opacity(drag.dragging == id && drag.outside ? 0.4 : 1)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { drag.frames[id] = $0 }
+    }
+}
+
+/// Copies a field's value; stays usable while the fields are locked.
+struct CopyButton: View {
+    let value: String
+    let label: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
+            copied = true
+            Task { try? await Task.sleep(for: .seconds(1.2)); copied = false }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc").frame(width: 16)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(copied ? .green : .secondary)
+        .disabled(value.isEmpty)
+        // Copying never changes anything, so it works on locked invoices too.
+        .environment(\.isEnabled, !value.isEmpty)
+        .help("\(label) kopieren")
+    }
+}
+
+/// Skonto, due date and direct debit as read from the invoice, with what paying in time saves.
+struct PaymentTermsBox: View {
+    let record: InvoiceRecord
+    let terms: PaymentTerms
+
+    var body: some View {
+        let invoiced = record.fields.invoiceDate
+        let currency = record.fields.currency
+        let offer = record.skontoOffer()
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Zahlungsbedingungen", systemImage: "calendar.badge.clock").font(.headline)
+            if let p = terms.discountPercent {
+                let deadline = terms.discountDeadline(invoiceDate: invoiced)
+                let saving = terms.discount(on: record.fields.total)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Skonto \(Self.percent(p))").fontWeight(.semibold)
+                        Spacer()
+                        if let saving { Text("− " + MenuBarView.money(saving, currency)).monospacedDigit().fontWeight(.semibold) }
+                    }
+                    if let deadline {
+                        Text("Frist: \(deadline.formatted(date: .numeric, time: .omitted))" + daysText(offer, deadline: deadline))
+                            .font(.callout)
+                    } else if terms.directDebit {
+                        Text("Wird beim Abbuchen abgezogen").font(.callout)
+                    } else {
+                        Text("Keine Frist angegeben").font(.callout).foregroundStyle(.secondary)
+                    }
+                    if let total = record.fields.total, let saving, offer != nil {
+                        Text("Statt \(MenuBarView.money(total, currency)) nur \(MenuBarView.money(total - saving, currency)) überweisen")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .glassEffect(.regular.tint(skontoTint(offer: offer, deadline: deadline).opacity(0.22)), in: .rect(cornerRadius: 10))
+            }
+            if let due = terms.due(invoiceDate: invoiced) {
+                row(terms.directDebit ? "Abbuchung am" : "Fällig am", due.formatted(date: .numeric, time: .omitted),
+                    late: record.stage == .open && !terms.directDebit && Calendar.current.startOfDay(for: due) < Calendar.current.startOfDay(for: Date()))
+            } else if terms.netDays == 0 {
+                row("Fällig", "sofort")
+            }
+            if terms.directDebit {
+                Label("Wird abgebucht, keine Überweisung nötig", systemImage: "arrow.down.circle").font(.callout).foregroundStyle(.secondary)
+            }
+            if !terms.text.isEmpty {
+                Text(terms.text).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .help("So steht es in der Rechnung")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+    }
+
+    private func row(_ title: String, _ value: String, late: Bool = false) -> some View {
+        HStack {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).foregroundStyle(late ? .red : .primary).fontWeight(late ? .semibold : .regular)
+        }
+        .font(.callout)
+    }
+
+    private func daysText(_ offer: SkontoOffer?, deadline: Date) -> String {
+        guard record.stage == .open else { return "" }
+        guard let left = offer?.daysLeft() else { return " · abgelaufen" }
+        return left == 0 ? " · heute letzter Tag" : left == 1 ? " · noch 1 Tag" : " · noch \(left) Tage"
+    }
+
+    private func skontoTint(offer: SkontoOffer?, deadline: Date?) -> Color {
+        guard record.stage == .open else { return .clear }
+        guard offer != nil else { return deadline == nil ? .clear : .red }
+        return (offer?.daysLeft() ?? 99) <= 2 ? .orange : .green
+    }
+
+    static func percent(_ p: Decimal) -> String {
+        NSDecimalNumber(decimal: p).stringValue.replacingOccurrences(of: ".", with: ",") + " %"
     }
 }

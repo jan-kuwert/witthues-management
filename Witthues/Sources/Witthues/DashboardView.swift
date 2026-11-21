@@ -4,7 +4,7 @@ import SwiftUI
 
 /// A block on the dashboard. Each one appears at most once.
 enum DashboardWidget: String, Codable, CaseIterable, Identifiable {
-    case kpis, amounts, counts, payments, companies, sources, paymentTime, unpaid, review
+    case kpis, amounts, counts, payments, companies, sources, paymentTime, unpaid, review, skonto
 
     var id: Self { self }
 
@@ -19,6 +19,7 @@ enum DashboardWidget: String, Codable, CaseIterable, Identifiable {
         case .paymentTime: return "Zahlungsdauer"
         case .unpaid: return "Warten auf Zahlung"
         case .review: return "Zu prüfen"
+        case .skonto: return "Skonto-Chancen"
         }
     }
 
@@ -33,6 +34,7 @@ enum DashboardWidget: String, Codable, CaseIterable, Identifiable {
         case .paymentTime: return "clock"
         case .unpaid: return "tray.full"
         case .review: return "exclamationmark.bubble"
+        case .skonto: return "percent"
         }
     }
 
@@ -49,7 +51,7 @@ struct DashboardItem: Codable, Equatable, Identifiable {
     static let standard: [DashboardItem] = [
         .init(widget: .kpis, wide: true), .init(widget: .amounts, wide: true),
         .init(widget: .companies, wide: false), .init(widget: .sources, wide: false),
-        .init(widget: .unpaid, wide: true),
+        .init(widget: .skonto, wide: true), .init(widget: .unpaid, wide: true),
     ]
 
     private static let key = "dashboardLayout"
@@ -320,6 +322,7 @@ struct DashboardView: View {
                 invoiceList(model.library.liveRecords.filter { $0.status == .unpaid }.sorted { date($0) < date($1) },
                             empty: "Alles bezahlt.") { Text(daysOpen($0)) }
             }
+        case .skonto: skonto
         case .review:
             card("Zu prüfen", subtitle: "Felder, die jemand ansehen sollte") {
                 invoiceList(model.library.liveRecords.filter(\.needsReview).sorted { date($0) > date($1) },
@@ -597,6 +600,25 @@ struct DashboardView: View {
             if records.count > shown.count {
                 Text("und \(records.count - shown.count) weitere").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+            }
+        }
+    }
+
+    /// Open invoices that are cheaper when paid in time, earliest deadline first, with what that saves in total.
+    private var skonto: some View {
+        let now = Date()
+        let offers = model.library.liveRecords.compactMap { r in r.skontoOffer(on: now).map { (r, $0) } }
+            .sorted { InvoiceRecord.bySkontoDeadline($0.0, $1.0, on: now) ?? (date($0.0) < date($1.0)) }
+        let savings = offers.filter { currencyOf($0.0) == currency }.compactMap(\.1.amount).reduce(Decimal(0), +)
+        let byID = Dictionary(uniqueKeysWithValues: offers.map { ($0.0.id, $0.1) })
+        let subtitle = offers.isEmpty ? "Offene Rechnungen mit Skonto, früheste Frist zuerst"
+            : "Bis zu \(money(NSDecimalNumber(decimal: savings).doubleValue)) sparen bei pünktlicher Zahlung · früheste Frist zuerst"
+        return card("Skonto-Chancen", subtitle: subtitle) {
+            invoiceList(offers.map(\.0), empty: "Keine offenen Rechnungen mit Skonto.") { r in
+                if let o = byID[r.id] {
+                    Text(InvoiceRow.skontoText(o, currency: r.fields.currency))
+                        .foregroundStyle(o.daysLeft().map { $0 <= 2 } == true ? .orange : .green)
+                }
             }
         }
     }

@@ -112,6 +112,43 @@ struct StatusLine: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        if let p = model.progress {
+            progress(p)
+        } else {
+            line
+        }
+    }
+
+    /// „Dateien · 3 / 12“ with a bar, the file or mail being read and what came out so far.
+    private func progress(_ p: MailProgress) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(p.total > 0 ? (p.folder.isEmpty ? (p.unit == "Mail" ? "Mails" : "Dateien") : p.folder) : p.step)
+                    .fontWeight(.medium).lineLimit(1)
+                Spacer(minLength: 4)
+                if p.total > 0 { Text("\(p.current) / \(p.total)").monospacedDigit() }
+            }
+            if let f = p.fraction {
+                ProgressView(value: f).progressViewStyle(.linear)
+            } else {
+                ProgressView().progressViewStyle(.linear)
+            }
+            if !p.subject.isEmpty {
+                Text(p.subject).font(.caption).lineLimit(1).truncationMode(.middle)
+            }
+            let s = p.summary
+            if s.filed + s.skipped + s.duplicates + s.errors.count > 0 {
+                Text([s.filed > 0 ? "\(s.filed) erfasst" : nil, s.skipped > 0 ? "\(s.skipped) keine Rechnung" : nil,
+                      s.duplicates > 0 ? "\(s.duplicates) schon vorhanden" : nil,
+                      s.errors.isEmpty ? nil : "\(s.errors.count) Fehler"].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption)
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
+
+    private var line: some View {
         HStack(spacing: 6) {
             if model.isChecking {
                 if let fraction = model.progress?.fraction {

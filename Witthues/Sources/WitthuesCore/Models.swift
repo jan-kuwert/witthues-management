@@ -8,9 +8,12 @@ public struct InvoiceFields: Codable, Equatable, Sendable {
     public var invoiceDate: Date?
     public var total: Decimal?
     public var currency: String
+    /// Skonto, due date and direct debit; nil when the invoice names none (or it was read before this existed).
+    public var terms: PaymentTerms?
 
     public init(seller: String = "", buyer: String = "", invoiceNumber: String = "",
-                invoiceDate: Date? = nil, total: Decimal? = nil, currency: String = "") {
+                invoiceDate: Date? = nil, total: Decimal? = nil, currency: String = "", terms: PaymentTerms? = nil) {
+        self.terms = terms
         self.seller = seller
         self.buyer = buyer
         self.invoiceNumber = invoiceNumber
@@ -117,6 +120,8 @@ public struct InvoiceRecord: Codable, Identifiable, Equatable, Sendable {
     public var printedAt: Date?
     /// True for a file read where it already lay: it keeps its folder and name until its stage changes.
     public var inPlace: Bool?
+    /// True once the payment terms were looked for in the file, so older invoices are read only once.
+    public var termsRead: Bool?
     /// A macOS bookmark of the file, which still finds it after it was moved in Finder or to the Trash.
     public var bookmark: Data?
 
@@ -147,6 +152,8 @@ public struct SkippedAttachment: Codable, Identifiable, Equatable, Sendable {
     public var reason: String
     public var storedPath: String
     public var skippedAt: Date
+    /// True for a file in the user's folders that was read and is no invoice; `storedPath` is that file, which stays where it is.
+    public var inPlace: Bool?
 
     public init(id: UUID = UUID(), origin: MailOrigin, reason: String, storedPath: String, skippedAt: Date = Date()) {
         self.id = id

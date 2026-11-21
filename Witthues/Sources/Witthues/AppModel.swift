@@ -30,6 +30,8 @@ final class AppModel {
             MainActor.assumeIsolated { self?.library.refreshFiles() }
         }
         restartTimer()
+        // Payment terms for invoices filed before the app read them.
+        Task { await library.readMissingTerms() }
         if library.settings.checkOnLaunch { checkNow() }
     }
 
@@ -110,6 +112,7 @@ final class AppModel {
         }
         isChecking = true
         isReadingPast = true
+        progress = MailProgress(step: "Wird vorbereitet …")
         pastResult = nil
         pastTask = Task {
             defer { isChecking = false; isReadingPast = false; progress = nil }

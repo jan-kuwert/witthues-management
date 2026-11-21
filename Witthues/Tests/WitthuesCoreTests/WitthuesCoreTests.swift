@@ -152,6 +152,39 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(lib.records.count == 1)
     }
 
+    @Test func fileAlreadyInFoldersIsNotFiledAgain() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        let root = tmp.appendingPathComponent("Rechnungen")
+        lib.settings.rootFolder = root.path
+        let ex = Extractor(useAppleIntelligence: false)
+        // Put there by hand under another name, unknown to the app.
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("2025-12"), withIntermediateDirectories: true)
+        try fixture("german.pdf").write(to: root.appendingPathComponent("2025-12/alt.pdf"))
+        #expect(try await lib.ingest(data: try fixture("german.pdf"), fileName: "r.pdf", origin: MailOrigin(), extractor: ex) == .duplicate)
+        guard case .filed = try await lib.ingest(data: try fixture("english.pdf"), fileName: "e.pdf", origin: MailOrigin(), extractor: ex)
+        else { Issue.record("a new invoice must still be filed"); return }
+    }
+
+    @Test func folderFileThatIsNoInvoiceCanBeDeclaredOne() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        let root = tmp.appendingPathComponent("Rechnungen")
+        lib.settings.rootFolder = root.path
+        let ex = Extractor(useAppleIntelligence: false)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("2025-12"), withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("2025-12/agb.pdf")
+        try fixture("agb.pdf").write(to: file)
+        #expect(try await lib.indexExisting(file, stage: .archived, extractor: ex) == .notInvoice)
+        let s = try #require(lib.skipped.first)
+        #expect(s.inPlace == true && s.storedPath == file.standardizedFileURL.path)
+        try await lib.importSkipped(s.id, stage: .archived, extractor: ex)
+        // Added where it lies; the file is neither moved nor deleted.
+        #expect(lib.skipped.isEmpty)
+        #expect(lib.records.first?.filePath == file.standardizedFileURL.path && lib.records.first?.stage == .archived)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
     @Test func fileThenArchiveByPaymentMonth() async throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let lib = Library(directory: tmp.appendingPathComponent("data"))
@@ -414,6 +447,80 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         try fixture("zugferd.pdf").write(to: copy)
         try lib.relink(r.id, to: copy)
         #expect(lib.deleted.isEmpty && lib.records.first?.filePath == copy.standardizedFileURL.path)
+    }
+}
+
+@Suite struct PaymentTermsTests {
+    private func parse(_ s: String) throws -> PaymentTerms { try #require(PaymentTerms.parse(s)) }
+
+    @Test func skontoAndNetInOneLine() throws {
+        let t = try parse("Zahlbar innerhalb von 10 Tagen mit 2 % Skonto oder 30 Tage netto.")
+        #expect(t.discountPercent == 2 && t.discountDays == 10 && t.netDays == 30 && !t.directDebit)
+        #expect(t.discountDeadline(invoiceDate: day(2026, 3, 7)) == day(2026, 3, 17))
+        #expect(t.due(invoiceDate: day(2026, 3, 7)) == day(2026, 4, 6))
+        #expect(t.discount(on: Decimal(string: "1190.00")) == Decimal(string: "23.80"))
+        // The deadline day still counts, the day after does not.
+        #expect(t.discountAvailable(invoiceDate: day(2026, 3, 7), on: day(2026, 3, 17)))
+        #expect(!t.discountAvailable(invoiceDate: day(2026, 3, 7), on: day(2026, 3, 18)))
+    }
+
+    @Test func otherPhrasings() throws {
+        let until = try parse("Bei Zahlung bis zum 15.03.2026 gewähren wir 3,5 % Skonto.")
+        #expect(until.discountPercent == Decimal(string: "3.5") && until.discountUntil == day(2026, 3, 15))
+        // From Jan's invoices: Telekom's debit date, Hassler's OCR'd „4o/o“, Herder's „sofort“.
+        let telekom = try parse("Rechnungsbetrag 72,96 €\nDen Betrag von 72,96 € buchen wir am 26.01.2026 ab.")
+        #expect(telekom.directDebit && telekom.dueDate == day(2026, 1, 26) && telekom.discountPercent == nil)
+        let hassler = try parse("Gläubiger ID: DE49 Zahlungsbedingungen Bankeinzug mit 4o/o Skonto")
+        #expect(hassler.directDebit && hassler.discountPercent == 4 && hassler.discountDeadline(invoiceDate: day(2025, 12, 27)) == nil)
+        let herder = try parse("Lohnarbeit! Zahlbar sofort ohne Abzug.:Zahlungsbedingung")
+        #expect(herder.netDays == 0 && herder.discountPercent == nil)
+        let us = try parse("Terms: 2/10 net 30")
+        #expect(us.discountPercent == 2 && us.discountDays == 10 && us.netDays == 30)
+        let en = try parse("Payment terms: 2% discount if paid within 10 days, due within 30 days")
+        #expect(en.discountPercent == 2 && en.discountDays == 10 && en.netDays == 30)
+        let x = try parse("#SKONTO#TAGE=14#PROZENT=2.00#")
+        #expect(x.discountPercent == 2 && x.discountDays == 14)
+    }
+
+    @Test func notPaymentTerms() {
+        // A line-item discount, VAT and net amounts are not Skonto or terms.
+        #expect(PaymentTerms.parse("Discount 10% on item 4711\nzzgl. 19 % USt.\nNettobetrag 1.000,00 EUR\nRabatt 5 %") == nil)
+    }
+
+    @Test func eInvoiceTermsAndTextAreCombined() async throws {
+        // The ZUGFeRD fixture's XML has no terms; the visible text may still add them.
+        let x = await Extractor(useAppleIntelligence: false).extract(data: try fixture("zugferd.pdf"), fileName: "r.pdf", subject: "", sender: "")
+        #expect(x.fields.terms == nil)
+        let cii = """
+        <rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100" xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100" xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
+        <rsm:ExchangedDocument><ram:ID>R-1</ram:ID><ram:IssueDateTime><udt:DateTimeString format="102">20260301</udt:DateTimeString></ram:IssueDateTime></rsm:ExchangedDocument>
+        <rsm:SupplyChainTradeTransaction><ram:ApplicableHeaderTradeSettlement>
+        <ram:SpecifiedTradeSettlementPaymentMeans><ram:TypeCode>58</ram:TypeCode></ram:SpecifiedTradeSettlementPaymentMeans>
+        <ram:SpecifiedTradePaymentTerms><ram:Description>#SKONTO#TAGE=7#PROZENT=3.00#</ram:Description>
+        <ram:DueDateDateTime><udt:DateTimeString format="102">20260331</udt:DateTimeString></ram:DueDateDateTime></ram:SpecifiedTradePaymentTerms>
+        </ram:ApplicableHeaderTradeSettlement></rsm:SupplyChainTradeTransaction></rsm:CrossIndustryInvoice>
+        """
+        let t = try #require(EInvoice.parse(xml: Data(cii.utf8))?.terms)
+        #expect(t.discountPercent == 3 && t.discountDays == 7 && t.dueDate == day(2026, 3, 31) && !t.directDebit)
+    }
+
+    @Test func openInvoicesBySkontoDeadline() throws {
+        func open(_ terms: String, invoiced: Date, total: String = "120") throws -> InvoiceRecord {
+            InvoiceRecord(fields: InvoiceFields(invoiceDate: invoiced, total: Decimal(string: total), terms: try parse(terms)),
+                          source: .textRules, reviewReasons: [], filePath: "/x.pdf", origin: MailOrigin(), sha256: terms)
+        }
+        let today = day(2026, 3, 10)
+        // Invoiced earlier but a longer window: its deadline (20.03.) is later than the 14-day one (15.03.).
+        let late = try open("14 Tage 3 % Skonto", invoiced: day(2026, 3, 6))
+        let soon = try open("Zahlbar innerhalb 7 Tagen mit 2 % Skonto", invoiced: day(2026, 3, 8))
+        let gone = try open("7 Tage 2 % Skonto", invoiced: day(2026, 2, 1))
+        let debit = try open("Bankeinzug mit 4 % Skonto", invoiced: day(2026, 3, 9))
+        #expect(try #require(soon.skontoOffer(on: today)).amount == Decimal(string: "2.4"))
+        #expect(try #require(late.skontoOffer(on: today)).daysLeft(from: today) == 10)
+        #expect(gone.skontoOffer(on: today) == nil && debit.skontoOffer(on: today) == nil)
+        #expect(InvoiceRecord.bySkontoDeadline(soon, late, on: today) == true)
+        #expect(InvoiceRecord.bySkontoDeadline(gone, late, on: today) == false)
+        #expect(InvoiceRecord.bySkontoDeadline(gone, debit, on: today) == nil)
     }
 }
 

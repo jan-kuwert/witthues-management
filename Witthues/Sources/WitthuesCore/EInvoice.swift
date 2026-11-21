@@ -91,6 +91,15 @@ public enum EInvoice {
             f.currency = first([settlement + "InvoiceCurrencyCode"])
             let sum = settlement + "SpecifiedTradeSettlementHeaderMonetarySummation/"
             f.total = parseAmount(first([sum + "GrandTotalAmount", sum + "DuePayableAmount"]))
+            let terms = settlement + "SpecifiedTradePaymentTerms/"
+            var t = PaymentTerms.parse(first([terms + "Description"])) ?? PaymentTerms()
+            t.dueDate = t.dueDate ?? parseDate(first([terms + "DueDateDateTime/DateTimeString"]))
+            t.discountPercent = t.discountPercent ?? parseAmount(first([terms + "ApplicableTradePaymentDiscountTerms/CalculationPercent"]))
+            t.discountDays = t.discountDays ?? Int(first([terms + "ApplicableTradePaymentDiscountTerms/BasisPeriodMeasure"])
+                .components(separatedBy: ".")[0])
+            // Payment means 59 is SEPA direct debit.
+            t.directDebit = t.directDebit || first([settlement + "SpecifiedTradeSettlementPaymentMeans/TypeCode"]) == "59"
+            f.terms = t.isEmpty ? nil : t
         case "Invoice", "CreditNote":
             f.invoiceNumber = first(["ID"])
             f.invoiceDate = parseDate(first(["IssueDate"]))
@@ -100,6 +109,10 @@ public enum EInvoice {
                              "AccountingCustomerParty/Party/PartyName/Name"])
             f.currency = first(["DocumentCurrencyCode"])
             f.total = parseAmount(first(["LegalMonetaryTotal/TaxInclusiveAmount", "LegalMonetaryTotal/PayableAmount"]))
+            var t = PaymentTerms.parse(first(["PaymentTerms/Note"])) ?? PaymentTerms()
+            t.dueDate = t.dueDate ?? parseDate(first(["DueDate", "PaymentMeans/PaymentDueDate"]))
+            t.directDebit = t.directDebit || first(["PaymentMeans/PaymentMeansCode"]) == "59"
+            f.terms = t.isEmpty ? nil : t
         default:
             return nil
         }
@@ -107,6 +120,8 @@ public enum EInvoice {
     }
 
     static func parseDate(_ s: String) -> Date? {
+        // DateFormatter reads "" as 1 Jan 2000.
+        guard !s.isEmpty else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
