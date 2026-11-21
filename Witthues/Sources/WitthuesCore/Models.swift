@@ -10,6 +10,8 @@ public struct InvoiceFields: Codable, Equatable, Sendable {
     public var currency: String
     /// Skonto, due date and direct debit; nil when the invoice names none (or it was read before this existed).
     public var terms: PaymentTerms?
+    /// The supplier's postal address as printed on the invoice, such as „Hauptstr. 1, 20095 Hamburg“.
+    public var sellerAddress: String?
 
     public init(seller: String = "", buyer: String = "", invoiceNumber: String = "",
                 invoiceDate: Date? = nil, total: Decimal? = nil, currency: String = "", terms: PaymentTerms? = nil) {

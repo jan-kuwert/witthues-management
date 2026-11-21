@@ -95,6 +95,9 @@ public struct Extractor: Sendable {
         // The model decides only when both agree it's unclear; keyword rules catch the model's misses.
         let isInvoice = looksLike || modelSaysInvoice == true
         if !isInvoice { return notInvoice(modelSaysInvoice == false ? "Apple Intelligence: keine Rechnung. \(why)" : why) }
+        // The model sometimes names the receiver; the rules skip the own name.
+        if OwnCompany.isOwn(fields.seller) { fields.seller = rules.seller }
+        fields.sellerAddress = fields.sellerAddress ?? rules.sellerAddress
 
         if fields.seller.isEmpty, !Self.senderName(sender).isEmpty {
             fields.seller = Self.senderName(sender)
@@ -111,6 +114,13 @@ public struct Extractor: Sendable {
     static func terms(xml: PaymentTerms?, text: String) -> PaymentTerms? {
         let fromText = PaymentTerms.parse(text)
         return xml.map { $0.merged(with: fromText) } ?? fromText
+    }
+
+    /// The supplier's address in a filed file (embedded XML first, then the PDF text; no OCR).
+    public static func sellerAddress(ofFile url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if url.pathExtension.lowercased() == "xml" { return EInvoice.parse(xml: data)?.sellerAddress }
+        return EInvoice.xml(inPDF: data).flatMap(EInvoice.parse)?.sellerAddress ?? TextRules.address(in: pdfText(data))
     }
 
     /// Payment terms of a filed file (PDF text and embedded XML, no OCR), for invoices read before terms existed.

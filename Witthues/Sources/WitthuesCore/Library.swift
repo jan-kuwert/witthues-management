@@ -58,7 +58,8 @@ public final class Library {
         }
         if migrated { save() }
         if let list = try? decoder.decode([Supplier].self, from: Data(contentsOf: directory.appendingPathComponent("suppliers.json"))) {
-            suppliers = list
+            // The own company is never a supplier, also when an older version added it.
+            suppliers = list.filter { !OwnCompany.isOwn($0.name) }
         } else {
             // First start with suppliers: the companies of the invoices filed so far.
             for r in records.sorted(by: { $0.importedAt < $1.importedAt }) { register(r.fields.seller) }
@@ -467,15 +468,24 @@ public final class Library {
     func matchSupplier(_ fields: inout InvoiceFields, _ reasons: inout [String]) {
         let name = fields.seller.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        if OwnCompany.isOwn(name) {
+            fields.seller = ""
+            reasons.removeAll { $0.hasPrefix("Firmenname aus") || $0 == "Kein Firmenname gefunden" }
+            reasons.append(OwnCompany.reviewReason)
+            return
+        }
         switch suppliers.match(name) {
         case .exact(let s):
             fields.seller = s.name
+            if s.address == nil, let a = fields.sellerAddress, let i = suppliers.firstIndex(where: { $0.id == s.id }) {
+                suppliers[i].address = a
+            }
             // A known supplier confirms a name guessed from the letterhead or the sender.
             reasons.removeAll { $0.hasPrefix("Firmenname aus") }
         case .close(let s):
             reasons.append(Self.similarSupplierPrefix + s.name + "“")
         case .none:
-            suppliers.append(Supplier(name: name))
+            suppliers.append(Supplier(name: name, address: fields.sellerAddress))
         }
     }
 
@@ -484,9 +494,30 @@ public final class Library {
     /// Adds the name as a supplier unless it, or a spelling of it, is known.
     func register(_ name: String) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        guard !name.isEmpty, !OwnCompany.isOwn(name) else { return }
         if case .exact = suppliers.match(name) { return }
         suppliers.append(Supplier(name: name))
+    }
+
+    /// Removes suppliers that no invoice uses. Suppliers with invoices stay; they are merged into another instead.
+    public func removeUnusedSuppliers(_ ids: Set<Supplier.ID>) {
+        suppliers.removeAll { ids.contains($0.id) && records(of: $0).allSatisfy(\.fileMissing) }
+    }
+
+    /// Fills in a supplier's address from the first of its invoice files that shows one.
+    public func findAddress(_ id: Supplier.ID) async {
+        guard let s = suppliers.first(where: { $0.id == id }), s.address == nil else { return }
+        for r in records(of: s) where !r.fileMissing {
+            var found = r.fields.sellerAddress
+            if found == nil {
+                let url = r.fileURL
+                found = await Task.detached { Extractor.sellerAddress(ofFile: url) }.value
+            }
+            if let a = found {
+                if let i = suppliers.firstIndex(where: { $0.id == id }), suppliers[i].address == nil { suppliers[i].address = a }
+                return
+            }
+        }
     }
 
     /// Invoices (also deleted ones) whose company is this supplier.

@@ -565,6 +565,35 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(list.match("Papierwerk Lahr") == .none)
     }
 
+    @Test func ownCompanyIsNeverTheSupplier() throws {
+        // The receiver's block comes first, as on many invoices; the supplier and its address come after it.
+        let text = """
+        Witthüs
+        Carmen Booz-Kuwert
+        Untere Wallbrunnstraße 9
+        79539 Lörrach
+        Musterbau GmbH
+        Industriestr. 12
+        77933 Lahr
+        Rechnung Nr. MB-2026-7
+        Rechnungsdatum: 02.03.2026
+        Gesamtbetrag 120,00 EUR
+        """
+        let f = TextRules.extract(text: text)
+        #expect(f.seller == "Musterbau GmbH")
+        #expect(f.sellerAddress == "Industriestr. 12, 77933 Lahr")
+        #expect(TextRules.address(in: "Beispiel Druckerei GmbH, Hauptstr. 1, 20095 Hamburg") == "Hauptstr. 1, 20095 Hamburg")
+
+        // A name the model or a person gives that is the own company never becomes a supplier.
+        let lib = Library(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        var own = InvoiceFields(seller: "Witthüs, Carmen Booz-Kuwert")
+        var reasons: [String] = []
+        lib.matchSupplier(&own, &reasons)
+        #expect(own.seller.isEmpty && reasons == [OwnCompany.reviewReason] && lib.suppliers.isEmpty)
+        lib.register("WITTHUES")
+        #expect(lib.suppliers.isEmpty)
+    }
+
     @Test func renameAndMergeRelabelInvoicesAndFiles() async throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let lib = Library(directory: tmp.appendingPathComponent("data"))

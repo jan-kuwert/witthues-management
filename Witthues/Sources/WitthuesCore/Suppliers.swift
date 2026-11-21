@@ -7,11 +7,14 @@ public struct Supplier: Codable, Identifiable, Equatable, Sendable {
     public var name: String
     /// Other spellings found on invoices or merged in, such as „Telekom Deutschland GmbH“ for „Telekom“.
     public var aliases: [String]
+    /// Postal address, from its first invoice that shows one; the user can change it.
+    public var address: String?
 
-    public init(id: UUID = UUID(), name: String, aliases: [String] = []) {
+    public init(id: UUID = UUID(), name: String, aliases: [String] = [], address: String? = nil) {
         self.id = id
         self.name = name
         self.aliases = aliases
+        self.address = address
     }
 
     /// Name and aliases in comparable form.
@@ -68,6 +71,21 @@ public struct Supplier: Codable, Identifiable, Equatable, Sendable {
         }
         return row[b.count]
     }
+}
+
+/// The company the invoices are addressed to. Its name and address are printed on every invoice, so they must never
+/// be taken for the supplier.
+public enum OwnCompany {
+    /// Parts of the own name and address, compared without case and accents.
+    static let markers = ["witthus", "witthues", "booz-kuwert", "booz kuwert", "wallbrunnstr", "wallbrunn str"]
+
+    public static func isOwn(_ text: String) -> Bool {
+        let t = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "de_DE"))
+            .replacingOccurrences(of: "ß", with: "ss")
+        return markers.contains { t.contains($0) }
+    }
+
+    public static let reviewReason = "Gelesener Firmenname war der Empfänger (Witthüs), bitte Lieferant eintragen"
 }
 
 /// What the supplier list knows about a company name read from an invoice.

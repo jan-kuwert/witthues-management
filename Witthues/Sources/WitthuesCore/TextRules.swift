@@ -49,7 +49,30 @@ public enum TextRules {
         }
         if f.currency.isEmpty { f.currency = currencyCode(in: text) ?? "" }
         f.seller = companyLine(in: text) ?? ""
+        f.sellerAddress = address(in: text)
         return f
+    }
+
+    /// The first postal address near the top that is not the own one: „Street 1, 12345 City“ on one line, or a
+    /// street line followed by a postcode line.
+    static func address(in text: String) -> String? {
+        let lines = text.split(separator: "\n").prefix(30).map { $0.trimmingCharacters(in: .whitespaces) }
+        let postcode = "(?:^|,\\s*|\\s)\\d{4,5}\\s+[A-ZÄÖÜ][a-zäöüß]+"
+        for (i, line) in lines.enumerated() where line.count <= 90 && line.range(of: postcode, options: .regularExpression) != nil {
+            let previous = i > 0 ? lines[i - 1] : ""
+            if OwnCompany.isOwn(line) || OwnCompany.isOwn(previous) { continue }
+            // „Firma GmbH, Hauptstr. 1, 20095 Hamburg“: the parts after the company name.
+            let parts = line.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count > 1 {
+                let kept = parts.filter { p in !legalForms.contains { (" " + p.lowercased()).contains($0) } }
+                if kept.count > 1 { return kept.joined(separator: ", ") }
+            }
+            // Street on the line before: it has a house number and is no company or label line.
+            if previous.range(of: "\\d", options: .regularExpression) != nil, previous.count <= 60, !previous.contains(":") {
+                return previous + ", " + line
+            }
+        }
+        return nil
     }
 
     static let legalForms = ["gmbh", " ag", " se", " kg", " ug", "e.k.", " inc", " llc", " ltd", "limited", " b.v.", " bv",
@@ -59,6 +82,8 @@ public enum TextRules {
     static func companyLine(in text: String) -> String? {
         for raw in text.split(separator: "\n").prefix(25) {
             let line = raw.trimmingCharacters(in: .whitespaces)
+            // The own name in the address block is the receiver, never the supplier.
+            if OwnCompany.isOwn(line) { continue }
             let lower = " " + line.lowercased()
             guard line.count <= 70, line.rangeOfCharacter(from: .letters) != nil else { continue }
             if legalForms.contains(where: { form in

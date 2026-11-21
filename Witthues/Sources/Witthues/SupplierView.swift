@@ -1,18 +1,30 @@
 import SwiftUI
 import WitthuesCore
 
-/// The suppliers: names to edit as the user likes them, other spellings, invoices and totals per supplier,
-/// and merging suppliers that are the same company.
+/// The suppliers: invoices and totals per supplier, merging suppliers that are the same company, and a detail page
+/// per supplier (double-click) to rename it and see its invoices, address and figures.
 struct SupplierView: View {
     @Environment(AppModel.self) private var model
     let open: (InvoiceRecord.ID) -> Void
     @State private var selection: Set<Supplier.ID> = []
     @State private var search = ""
     @State private var sortOrder = [KeyPathComparator(\SupplierRow.name)]
+    /// The supplier whose detail page is shown.
+    @State private var detail: Supplier.ID?
+    /// A supplier with invoices the user wants to remove: its invoices first go to another supplier.
+    @State private var reassigning: Supplier?
 
     var body: some View {
+        if let id = detail, model.library.suppliers.contains(where: { $0.id == id }) {
+            SupplierDetail(id: id, open: open, back: { detail = nil })
+        } else {
+            list
+        }
+    }
+
+    private var list: some View {
         let rows = self.rows
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 TextField("Suchen", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
                 Spacer()
@@ -20,7 +32,7 @@ struct SupplierView: View {
                 Button {
                     let s = Supplier(name: "Neuer Lieferant")
                     model.library.suppliers.append(s)
-                    selection = [s.id]
+                    detail = s.id
                 } label: {
                     Label("Lieferant hinzufügen", systemImage: "plus")
                 }
@@ -28,7 +40,7 @@ struct SupplierView: View {
             }
             suggestions
             Table(rows, selection: $selection, sortOrder: $sortOrder) {
-                TableColumn("Name", value: \.name) { r in SupplierNameField(name: r.supplier.name) { rename(r.supplier.id, $0) } }
+                TableColumn("Name", value: \.name) { r in Text(r.supplier.name).fontWeight(.medium) }
                     .width(min: 160, ideal: 240)
                 TableColumn("Andere Schreibweisen") { r in
                     Text(r.supplier.aliases.joined(separator: " · ")).foregroundStyle(.secondary).lineLimit(1)
@@ -45,6 +57,12 @@ struct SupplierView: View {
                     Text(r.last == .distantPast ? "–" : r.last.formatted(date: .numeric, time: .omitted))
                 }
                 .width(min: 90, ideal: 110)
+                TableColumn("") { r in
+                    Button { detail = r.supplier.id } label: { Image(systemName: "chevron.right") }
+                        .buttonStyle(.borderless)
+                        .help("Details zu „\(r.supplier.name)“")
+                }
+                .width(28)
             }
             .contextMenu(forSelectionType: Supplier.ID.self) { ids in
                 let chosen = model.library.suppliers.filter { ids.contains($0.id) }
@@ -52,21 +70,39 @@ struct SupplierView: View {
                     ForEach(chosen) { s in Button("Zusammenführen zu „\(s.name)“") { merge(ids, into: s.id) } }
                     Divider()
                 }
-                if chosen.count == 1, let s = chosen.first,
-                   let latest = model.library.records(of: s).filter({ !$0.fileMissing }).max(by: { $0.importedAt < $1.importedAt }) {
-                    Button("Neueste Rechnung öffnen") { open(latest.id) }
+                if chosen.count == 1, let s = chosen.first {
+                    Button("Details öffnen") { detail = s.id }
                 }
-                Button(chosen.count == 1 ? "Lieferant entfernen" : "\(chosen.count) Lieferanten entfernen", role: .destructive) {
-                    model.library.suppliers.removeAll { ids.contains($0.id) }
+                let used = chosen.filter { invoiceCount($0) > 0 }
+                if used.isEmpty {
+                    Button(chosen.count == 1 ? "Lieferant löschen" : "\(chosen.count) Lieferanten löschen", role: .destructive) {
+                        model.library.removeUnusedSuppliers(ids)
+                    }
+                } else if chosen.count == 1, let s = used.first {
+                    Button("Lieferant löschen …", role: .destructive) { reassigning = s }
+                } else {
+                    Button("\(chosen.count - used.count) ohne Rechnungen löschen", role: .destructive) {
+                        model.library.removeUnusedSuppliers(ids)
+                    }
+                    .disabled(used.count == chosen.count)
                 }
-                .help("Nur aus der Liste; Rechnungen bleiben unverändert")
+            } primaryAction: { ids in
+                if ids.count == 1 { detail = ids.first }
             }
-            Text("Namen per Doppelklick ändern: Rechnungen und Dateinamen des Lieferanten bekommen den neuen Namen, der alte bleibt als Schreibweise erkannt. Mehrere auswählen (⌘-Klick) zum Zusammenführen.")
+            Text("Doppelklick öffnet die Details mit Rechnungen, Kennzahlen und Adresse; dort lässt sich der Name ändern. Mehrere auswählen (⌘-Klick) zum Zusammenführen. Lieferanten mit Rechnungen werden beim Löschen erst einem anderen zugeordnet.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(16)
         .navigationTitle("Lieferanten")
+        .sheet(item: $reassigning) { s in
+            ReassignSheet(supplier: s, count: invoiceCount(s),
+                          others: model.library.suppliers.filter { $0.id != s.id }.sorted { $0.name < $1.name },
+                          reassign: { target in merge([s.id, target], into: target) },
+                          check: { detail = s.id })
+        }
     }
+
+    private func invoiceCount(_ s: Supplier) -> Int { model.library.records(of: s).filter { !$0.fileMissing }.count }
 
     private struct SupplierRow: Identifiable {
         let supplier: Supplier
@@ -134,12 +170,6 @@ struct SupplierView: View {
         .help("Ausgewählte Lieferanten zu einem zusammenführen; ihre Rechnungen bekommen dessen Namen")
     }
 
-    /// Renames a supplier and returns the name it has afterwards.
-    private func rename(_ id: Supplier.ID, _ name: String) -> String {
-        do { try model.library.renameSupplier(id, to: name) } catch { model.lastError = error.localizedDescription }
-        return model.library.suppliers.first { $0.id == id }?.name ?? name
-    }
-
     private func merge(_ ids: Set<Supplier.ID>, into target: Supplier.ID) {
         do {
             try model.library.mergeSuppliers(ids, into: target)
@@ -150,9 +180,48 @@ struct SupplierView: View {
     }
 }
 
+/// Removing a supplier that still has invoices: they go to another supplier (its name stays known as another
+/// spelling), or the user checks the invoices first.
+private struct ReassignSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let supplier: Supplier
+    let count: Int
+    let others: [Supplier]
+    let reassign: (Supplier.ID) -> Void
+    let check: () -> Void
+    @State private var target: Supplier.ID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("„\(supplier.name)“ löschen").font(.title3.weight(.semibold))
+            Text(count == 1 ? "Zu diesem Lieferanten gehört 1 Rechnung." : "Zu diesem Lieferanten gehören \(count) Rechnungen.")
+                + Text(" Wem sollen sie gehören? Sie bekommen dessen Namen (auch im Dateinamen), und „\(supplier.name)“ wird künftig als dessen Schreibweise erkannt.")
+            Picker("Zuordnen zu", selection: $target) {
+                Text("Bitte wählen").tag(Supplier.ID?.none)
+                ForEach(others) { Text($0.name).tag(Supplier.ID?.some($0.id)) }
+            }
+            HStack {
+                Button("Rechnungen prüfen") { dismiss(); check() }
+                    .help("Erst die Rechnungen und PDFs dieses Lieferanten ansehen")
+                Spacer()
+                Button("Abbrechen", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Zuordnen und löschen") {
+                    if let target { reassign(target) }
+                    dismiss()
+                }
+                .buttonStyle(.glassProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(target == nil)
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
+    }
+}
+
 /// The supplier's name, saved (and given to its invoices) with Return or when leaving the field.
 /// Takes no environment: table cells of a just-merged supplier can update after leaving the table.
-private struct SupplierNameField: View {
+struct SupplierNameField: View {
     let name: String
     let rename: (String) -> String
     @State private var text = ""
@@ -160,7 +229,7 @@ private struct SupplierNameField: View {
 
     var body: some View {
         TextField("Name", text: $text)
-            .textFieldStyle(.plain)
+            .textFieldStyle(.roundedBorder)
             .focused($focused)
             .onAppear { text = name }
             .onChange(of: name) { text = name }

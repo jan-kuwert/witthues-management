@@ -630,7 +630,10 @@ struct InvoiceDetail: View {
 
     /// Under the company name: the closest known supplier to take over, or that the name is new.
     @ViewBuilder private var supplierHint: some View {
-        if let s = similarSupplier {
+        if OwnCompany.isOwn(fields.seller) {
+            Label("Das ist der Empfänger (Witthüs), nicht der Lieferant", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption).foregroundStyle(.red)
+        } else if let s = similarSupplier {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text("Ähnlicher Lieferant: \(s.name)").lineLimit(1).truncationMode(.middle)
