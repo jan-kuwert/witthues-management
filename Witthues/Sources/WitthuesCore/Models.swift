@@ -117,6 +117,8 @@ public struct InvoiceRecord: Codable, Identifiable, Equatable, Sendable {
     public var printedAt: Date?
     /// True for a file read where it already lay: it keeps its folder and name until its stage changes.
     public var inPlace: Bool?
+    /// A macOS bookmark of the file, which still finds it after it was moved in Finder or to the Trash.
+    public var bookmark: Data?
 
     public var needsReview: Bool { !reviewReasons.isEmpty }
     public var stage: Stage { status == .unpaid ? .open : archived == true ? .archived : .paid }

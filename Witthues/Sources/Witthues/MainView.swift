@@ -25,9 +25,8 @@ struct MainView: View {
     @State private var drag = CommandDragOut()
     /// Shown when a folder from outside the main folder is dropped on the sidebar.
     @State private var dropProblem: String?
-    @State private var importingPaid = false
-    /// Files dropped on the window or the sidebar, waiting for the stage.
-    @State private var stageRequest: StageRequest?
+    /// The open "Rechnung hinzufügen" sheet, with the files dropped on the window or sidebar.
+    @State private var adding: AddRequest?
 
     var body: some View {
         Group {
@@ -54,7 +53,7 @@ struct MainView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    importingPaid = true
+                    adding = AddRequest()
                 } label: {
                     Label("Rechnung hinzufügen", systemImage: "doc.badge.plus")
                 }
@@ -82,20 +81,19 @@ struct MainView: View {
                     else if let data = try? await p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data,
                             let url = URL(dataRepresentation: data, relativeTo: nil) { urls.append(url) }
                 }
-                stageRequest = model.importRequest(urls)
+                if !urls.isEmpty { adding = AddRequest(urls: urls) }
             }
             return true
         }
         .overlay {
             if dropTargeted {
-                Label("PDFs oder E-Rechnungen (XML) hier ablegen", systemImage: "square.and.arrow.down")
+                Label("Rechnungen hier ablegen (PDF, XML, Bilder, Ordner)", systemImage: "square.and.arrow.down")
                     .font(.title3)
                     .padding(24)
                     .glassEffect(.regular, in: .rect(cornerRadius: 20))
             }
         }
-        .sheet(isPresented: $importingPaid) { AddInvoiceSheet() }
-        .stagePrompt($stageRequest)
+        .sheet(item: $adding) { AddInvoiceSheet(initial: $0.urls) }
         .sheet(isPresented: Binding(get: { model.showingPastMail }, set: { model.showingPastMail = $0 })) { PastMailSheet() }
         .sheet(item: $renaming) { v in
             ViewEditor(title: v.isFolder == true ? "Ordner bearbeiten" : "Ansicht bearbeiten", name: v.name, icon: v.symbol) { name, icon in
@@ -272,7 +270,7 @@ struct MainView: View {
         if !outside.isEmpty {
             dropProblem = "„\(outside.joined(separator: "“, „"))“ liegt nicht im Hauptordner „\(ArchiveFolders.rootName(model.library))“. Nur Ordner darin können in die Seitenleiste."
         }
-        if !files.isEmpty { stageRequest = model.importRequest(files) }
+        if !files.isEmpty { adding = AddRequest(urls: files) }
     }
 
     private func deleteView(_ id: SavedView.ID) {
@@ -384,7 +382,7 @@ struct InvoiceRow: View {
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 if record.fileMissing {
-                    Text("Datei wurde verschoben oder gelöscht").font(.caption).foregroundStyle(.red)
+                    Text("Datei gelöscht · Rechtsklick zum Wiederherstellen").font(.caption).foregroundStyle(.red)
                 } else if record.needsReview {
                     Text(record.reviewReasons.first ?? "").font(.caption).foregroundStyle(.orange).lineLimit(1)
                 } else if record.stage == .paid {
@@ -436,11 +434,21 @@ struct InvoiceDetail: View {
         if let record {
             HSplitView {
                 PDFPreview(url: record.fileURL)
+                    // Loads the file again once it is back after a restore.
+                    .id(record.fileMissing)
                     .frame(minWidth: 300)
+                    .overlay(alignment: .bottom) {
+                        if !record.fileMissing { FileDragChip(url: record.fileURL).padding(12) }
+                    }
                     .overlay {
                         if record.fileMissing {
-                            ContentUnavailableView("Datei gelöscht", systemImage: "trash",
-                                                   description: Text("Die Datei liegt nicht mehr im Ordner, etwa weil sie im Finder gelöscht wurde."))
+                            ContentUnavailableView {
+                                Label("Datei gelöscht", systemImage: "trash")
+                            } description: {
+                                Text("Die Datei liegt im Papierkorb oder wurde gelöscht. „Wiederherstellen“ holt sie zurück; ist sie ganz weg, lässt sie sich selbst auswählen.")
+                            } actions: {
+                                RestoreButtons(id: record.id)
+                            }
                         }
                     }
                 ScrollView {
@@ -760,6 +768,61 @@ struct PDFPreview: NSViewRepresentable {
     }
 }
 
+/// Brings a deleted invoice back: from the Trash or wherever the file went, otherwise from a file the user picks.
+struct RestoreButtons: View {
+    @Environment(AppModel.self) private var model
+    let id: InvoiceRecord.ID
+    @State private var notFound = false
+
+    var body: some View {
+        Button("Wiederherstellen") {
+            do { if try !model.library.restore(id) { notFound = true } } catch { model.lastError = error.localizedDescription }
+        }
+        .help("Holt die Datei aus dem Papierkorb oder von dort, wohin sie verschoben wurde, zurück")
+        Button("Datei auswählen …") { pick() }
+            .help("Die Datei selbst suchen, etwa wenn sie umbenannt oder kopiert wurde")
+            .alert("Datei nicht gefunden", isPresented: $notFound) {
+                Button("Datei auswählen …") { pick() }
+                Button("Abbrechen", role: .cancel) {}
+            } message: {
+                Text("Die Datei ist weder im Papierkorb noch an einem neuen Ort. Sie können sie selbst auswählen.")
+            }
+    }
+
+    private func pick() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .xml, .image]
+        panel.prompt = "Zuordnen"
+        if let r = model.library.records.first(where: { $0.id == id }) {
+            panel.directoryURL = r.fileURL.deletingLastPathComponent()
+            panel.message = "Datei für \(r.fields.seller.isEmpty ? r.fileURL.lastPathComponent : r.fields.seller) auswählen"
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try model.library.relink(id, to: url) } catch { model.lastError = error.localizedDescription }
+    }
+}
+
+/// A handle on top of the PDF: drag it to Finder, Mail or another app to hand over a copy of the file.
+struct FileDragChip: View {
+    let url: URL
+
+    var body: some View {
+        Label(url.lastPathComponent, systemImage: "doc.richtext")
+            .font(.callout).lineLimit(1).truncationMode(.middle)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .onDrag {
+                // A copy of the file under its own name; the original stays where it is.
+                let provider = NSItemProvider(contentsOf: url) ?? NSItemProvider()
+                provider.suggestedName = url.deletingPathExtension().lastPathComponent
+                return provider
+            } preview: {
+                Label(url.lastPathComponent, systemImage: "doc.richtext").padding(8)
+            }
+            .help("Ziehen, um die Datei in den Finder, eine Mail oder eine andere App zu legen")
+    }
+}
+
 /// Invoices whose file was deleted, in the app or in Finder. They no longer count anywhere and can be cleared.
 struct DeletedList: View {
     @Environment(AppModel.self) private var model
@@ -769,6 +832,7 @@ struct DeletedList: View {
     var body: some View {
         List(model.library.deleted, selection: $selection) { r in
             InvoiceRow(record: r).tag(r.id)
+                .contextMenu { RestoreButtons(id: r.id) }
         }
         .safeAreaInset(edge: .bottom) {
             if !model.library.deleted.isEmpty {

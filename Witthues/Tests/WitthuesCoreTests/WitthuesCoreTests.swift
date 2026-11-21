@@ -377,6 +377,46 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
     }
 }
 
+@Suite struct DeletedFileTests {
+    @MainActor @Test func movedFilesAreFoundTrashedOnesRestored() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
+        let outcome = try await lib.ingest(data: try fixture("zugferd.pdf"), fileName: "x.pdf", origin: MailOrigin(),
+                                           extractor: Extractor(useAppleIntelligence: false))
+        guard case .filed(let r) = outcome else { Issue.record("not filed"); return }
+        let fm = FileManager.default
+
+        // Moved elsewhere in Finder (e.g. dragged to the desktop): the invoice follows the file and is not deleted.
+        let elsewhere = tmp.appendingPathComponent("Schreibtisch/umbenannt.pdf")
+        try fm.createDirectory(at: elsewhere.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.moveItem(at: r.fileURL, to: elsewhere)
+        lib.refreshFiles()
+        var now = try #require(lib.records.first)
+        #expect(!now.fileMissing)
+        #expect(now.filePath == elsewhere.standardizedFileURL.path)
+        #expect(lib.deleted.isEmpty)
+
+        // In the Trash it counts as deleted, and restoring puts it back where it was.
+        try fm.trashItem(at: elsewhere, resultingItemURL: nil)
+        lib.refreshFiles()
+        #expect(lib.deleted.count == 1)
+        #expect(try lib.restore(r.id))
+        now = try #require(lib.records.first)
+        #expect(!now.fileMissing && now.filePath == elsewhere.standardizedFileURL.path)
+        #expect(fm.fileExists(atPath: elsewhere.path))
+
+        // Gone for good: the user picks a copy by hand.
+        try fm.removeItem(at: elsewhere)
+        lib.refreshFiles()
+        #expect(try lib.restore(r.id) == false)
+        let copy = tmp.appendingPathComponent("Kopie.pdf")
+        try fixture("zugferd.pdf").write(to: copy)
+        try lib.relink(r.id, to: copy)
+        #expect(lib.deleted.isEmpty && lib.records.first?.filePath == copy.standardizedFileURL.path)
+    }
+}
+
 @Suite struct PrintTests {
     @Test func everyInvoiceStartsOnAFreshSheet() throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

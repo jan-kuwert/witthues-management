@@ -127,44 +127,24 @@ final class AppModel {
 
     func cancelReadingPast() { pastTask?.cancel() }
 
-    /// Files invoices the user added by hand (dropped, picked, photographed or scanned) with the stage they chose;
-    /// returns a short German summary.
-    @discardableResult
-    func importFiles(_ files: [(Data, String)], stage: Stage, paidOn date: Date?) async -> String {
-        var filed = 0, duplicates = 0
-        var failed: [String] = []
-        for (data, name) in files {
-            do {
-                if try await library.ingestFile(data: data, fileName: name, stage: stage, paidOn: date,
-                                                origin: MailOrigin(subject: "Von Hand hinzugefügt", attachmentName: name),
-                                                extractor: extractor) != nil {
-                    filed += 1
-                } else {
-                    duplicates += 1
-                }
-            } catch {
-                failed.append(name)
-                lastError = "\(name): \(error.localizedDescription)"
-            }
+    /// What happened to one file added by hand.
+    enum AddResult {
+        case filed(InvoiceRecord), duplicate, failed(String)
+    }
+
+    /// Files one invoice the user added by hand (dropped, picked, photographed or scanned) with the stage they chose.
+    func importFile(_ data: Data, name: String, stage: Stage, paidOn date: Date?) async -> AddResult {
+        do {
+            let record = try await library.ingestFile(data: data, fileName: name, stage: stage, paidOn: date,
+                                                      origin: MailOrigin(subject: "Von Hand hinzugefügt", attachmentName: name),
+                                                      extractor: extractor)
+            return record.map(AddResult.filed) ?? .duplicate
+        } catch {
+            return .failed(error.localizedDescription)
         }
-        var parts: [String] = []
-        if filed > 0 { parts.append((filed == 1 ? "1 Rechnung" : "\(filed) Rechnungen") + " unter „\(stage.label)“ abgelegt") }
-        if duplicates > 0 { parts.append(duplicates == 1 ? "1 war schon vorhanden" : "\(duplicates) waren schon vorhanden") }
-        if !failed.isEmpty { parts.append("nicht lesbar: " + failed.joined(separator: ", ")) }
-        return parts.isEmpty ? "Nichts hinzugefügt" : parts.joined(separator: " · ")
     }
 
     var unpaidCount: Int { library.liveRecords.filter { $0.status == .unpaid }.count }
-
-    /// Asks for the stage, then files the dropped or picked files (folders included) by the templates.
-    func importRequest(_ urls: [URL]) -> StageRequest? {
-        let files = AddInvoiceSheet.files(in: urls)
-        guard !files.isEmpty else { return nil }
-        return StageRequest(title: files.count == 1 ? "1 Datei hinzufügen" : "\(files.count) Dateien hinzufügen",
-                            detail: files.map(\.1).joined(separator: ", "), inPlace: false, suggested: .open) { [weak self] stage, date in
-            Task { await self?.importFiles(files, stage: stage, paidOn: date) }
-        }
-    }
 
     // MARK: - Start at login
 

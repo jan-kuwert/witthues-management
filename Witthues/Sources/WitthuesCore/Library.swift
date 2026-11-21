@@ -135,6 +135,7 @@ public final class Library {
                                    status: stage == .open ? .unpaid : .paid, paidDate: paid,
                                    filePath: url.path, origin: origin, sha256: hash)
         record.archived = stage == .archived
+        record.bookmark = Self.bookmark(url)
         records.insert(record, at: 0)
         save()
         return .filed(record)
@@ -177,6 +178,7 @@ public final class Library {
         record.archived = stage == .archived
         record.inPlace = true
         record.customName = url.deletingPathExtension().lastPathComponent
+        record.bookmark = Self.bookmark(url)
         records.insert(record, at: 0)
         save()
         return .added
@@ -405,14 +407,97 @@ public final class Library {
         save()
     }
 
-    /// Notices files that were moved or deleted outside the app, e.g. in Finder or OneDrive.
+    /// Notices files that were moved or deleted outside the app, e.g. in Finder or OneDrive. A moved file is found
+    /// again (by its bookmark, or by its content in the main folder) and keeps its invoice; only a file that is gone
+    /// or lies in the Trash counts as deleted.
     public func refreshFiles() {
         var changed = false
         for i in records.indices {
-            let missing = !FileManager.default.fileExists(atPath: records[i].filePath)
-            if records[i].fileMissing != missing { records[i].fileMissing = missing; changed = true }
+            let url = records[i].fileURL
+            if FileManager.default.fileExists(atPath: url.path) {
+                if records[i].fileMissing { records[i].fileMissing = false; changed = true }
+                if records[i].bookmark == nil, let b = Self.bookmark(url) { records[i].bookmark = b; changed = true }
+                continue
+            }
+            if let found = Self.resolve(records[i].bookmark), !Self.isInTrash(found) {
+                relocate(i, to: found)
+                changed = true
+            } else if !records[i].fileMissing {
+                records[i].fileMissing = true
+                changed = true
+            }
+        }
+        // Without a bookmark (or when it broke), look for the same content among unknown PDFs in the main folder.
+        if records.contains(where: \.fileMissing), settings.isFolderConfigured {
+            var missing = Dictionary(records.indices.filter { records[$0].fileMissing }.map { (records[$0].sha256, $0) }) { a, _ in a }
+            for url in unknownFiles(in: organizer.rootURL) where !missing.isEmpty {
+                guard let data = try? Data(contentsOf: url), let i = missing.removeValue(forKey: Self.sha256(data)) else { continue }
+                relocate(i, to: url)
+                changed = true
+            }
         }
         if changed { save() }
+    }
+
+    private func relocate(_ i: Int, to url: URL) {
+        records[i].filePath = url.standardizedFileURL.path
+        records[i].fileMissing = false
+        records[i].bookmark = Self.bookmark(url)
+        ignoredFiles.remove(records[i].filePath)
+    }
+
+    /// Brings a deleted invoice's file back: from the Trash or wherever its bookmark now points, to where it was.
+    /// Returns false when the file can't be found; then the user picks it with `relink`.
+    @discardableResult
+    public func restore(_ id: InvoiceRecord.ID) throws -> Bool {
+        guard let i = records.firstIndex(where: { $0.id == id }) else { return false }
+        refreshFiles()
+        guard records[i].fileMissing else { return true }
+        guard let found = Self.resolve(records[i].bookmark), FileManager.default.fileExists(atPath: found.path) else { return false }
+        var target = records[i].fileURL
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Something else took the old name meanwhile: keep both.
+        var n = 2
+        while FileManager.default.fileExists(atPath: target.path) {
+            let base = records[i].fileURL.deletingPathExtension().lastPathComponent
+            target = records[i].fileURL.deletingLastPathComponent().appendingPathComponent("\(base) (\(n))")
+                .appendingPathExtension(records[i].fileURL.pathExtension)
+            n += 1
+        }
+        try FileManager.default.moveItem(at: found, to: target)
+        relocate(i, to: target)
+        save()
+        return true
+    }
+
+    /// Links a deleted invoice to a file the user picked. A file with other content is accepted but marked for a check.
+    public func relink(_ id: InvoiceRecord.ID, to url: URL) throws {
+        guard let i = records.firstIndex(where: { $0.id == id }) else { return }
+        let hash = Self.sha256(try Data(contentsOf: url))
+        if hash != records[i].sha256 {
+            if records.contains(where: { $0.id != id && $0.sha256 == hash && !$0.fileMissing }) {
+                throw IMAPError(message: "Diese Datei gehört schon zu einer anderen Rechnung.")
+            }
+            records[i].sha256 = hash
+            records[i].reviewReasons.append("Datei von Hand zugeordnet, Inhalt weicht ab")
+        }
+        relocate(i, to: url)
+        save()
+    }
+
+    static func bookmark(_ url: URL) -> Data? { try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) }
+
+    static func resolve(_ bookmark: Data?) -> URL? {
+        guard let bookmark else { return nil }
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting], relativeTo: nil,
+                                 bookmarkDataIsStale: &stale),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    static func isInTrash(_ url: URL) -> Bool {
+        url.standardizedFileURL.pathComponents.contains { $0 == ".Trash" || $0 == ".Trashes" }
     }
 
     // MARK: - Mailbox positions
