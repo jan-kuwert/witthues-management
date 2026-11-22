@@ -1,12 +1,10 @@
 # Builds Witthüs on a GitHub-hosted Mac and publishes it as release vN (N = previous release + 1).
 # The app's updater reads the newest release and downloads Witthues.zip; Witthüs.dmg is for installing by hand.
-# Free for public repositories. Runs on every push to main that changes the app, or by hand under Actions.
+# Free for public repositories. Runs only when started by hand (Actions → Release → Run workflow, or
+# `gh workflow run release.yml`), so several pushes can go into one version.
 name: Release
 
 on:
-  push:
-    branches: [main]
-    paths: ["Witthues/**", ".github/workflows/release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -30,6 +28,27 @@ jobs:
           XCODE=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
           echo "DEVELOPER_DIR=$XCODE/Contents/Developer" >> "$GITHUB_ENV"
           echo "Using $XCODE"
+
+      - name: Signing certificate
+        env:
+          SIGNING_P12: ${{ secrets.SIGNING_P12 }}
+        run: |
+          if [ -z "$SIGNING_P12" ]; then
+            echo "::warning::No SIGNING_P12 secret (see Witthues/make-signing-key.sh): ad-hoc signature, macOS asks for keychain access after the update."
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p ci "$KC"
+          echo "$SIGNING_P12" | base64 -D > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KC" -P witthues -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k ci "$KC" >/dev/null
+          ID=$(security find-identity -p codesigning "$KC" | awk '/"Witthues Signing"/{print $2; exit}')
+          echo "SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
+          echo "SIGN_KEYCHAIN=$KC" >> "$GITHUB_ENV"
+          echo "Signing with $ID"
 
       - name: Next version
         id: version

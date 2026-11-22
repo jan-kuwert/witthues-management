@@ -87,13 +87,15 @@ Danach liegen in `Witthues/dist/`:
 
 Einstellungen, Passwort, Ansichten, Dashboard-Anordnung und die Liste der Rechnungen liegen **nicht in der App**, sondern in `~/Library/Application Support/Witthues/`, im Schlüsselbund und in den App-Einstellungen von macOS. Die Rechnungen selbst liegen im Hauptordner (OneDrive). Ein Update tauscht nur die App aus.
 
-**Automatisch (empfohlen):** Jeder Push auf `main`, der die App ändert, baut auf einem Mac von GitHub (für öffentliche Repos kostenlos) eine neue Version und veröffentlicht sie als Release `v1`, `v2`, `v3` … (`.github/workflows/release.yml`; von Hand unter *Actions → Release → Run workflow*). Witthüs sucht beim Start und alle 6 Stunden danach:
+**Automatisch (empfohlen):** Eine neue Version entsteht, wenn genug Änderungen zusammengekommen sind: unter *Actions → Release → Run workflow* (oder `gh workflow run release.yml`). Ein Mac von GitHub (für öffentliche Repos kostenlos) testet und baut den aktuellen Stand von `main` und veröffentlicht ihn als Release `v1`, `v2`, `v3` … (`.github/workflows/release.yml`). Pushes allein erzeugen keine Version. Witthüs sucht beim Start und alle 6 Stunden danach:
 
 - Unten in der Seitenleiste erscheint „Neue Version N“ mit **Herunterladen** (mit × ausblenden bis zur nächsten Version).
 - Nach dem Download: **Jetzt installieren** (Witthüs startet neu) oder **Beim nächsten Start** (wird dann beim Öffnen installiert).
 - *Einstellungen → Updates* zeigt immer die installierte und die neueste Version, „Jetzt prüfen“, die Änderungen und den Download.
 
-Die erste Version mit Updater muss einmal von Hand installiert werden (die `Witthues.dmg` aus dem neuesten Release oder selbst gebaut). Weil die App nur ad-hoc signiert ist, fragt macOS nach einem Update eventuell einmal, ob Witthüs das Mail-Passwort aus dem Schlüsselbund lesen darf: **Immer erlauben**.
+Die erste Version mit Updater muss einmal von Hand installiert werden (die `Witthues.dmg` aus dem neuesten Release oder selbst gebaut).
+
+**Gleichbleibende Signatur:** Damit macOS nach einem Update nicht jedes Mal fragt, ob Witthüs das Mail-Passwort aus dem Schlüsselbund lesen darf, signiert GitHub jede Version mit demselben selbst erstellten Zertifikat. Einmalig auf einem Mac `Witthues/make-signing-key.sh` ausführen: Es erstellt das Zertifikat und speichert es als Secret `SIGNING_P12` im Repository (mit `gh`, sonst über die Zwischenablage und die geöffnete GitHub-Seite). Nach dem ersten so signierten Update fragt macOS noch einmal: **Immer erlauben**, danach nicht mehr. Ohne das Secret bleibt es bei der Ad-hoc-Signatur und der Frage nach jedem Update.
 
 **Von Hand:**
 

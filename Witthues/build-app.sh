@@ -43,8 +43,16 @@ EOF
 swift "$ICONSET/../render.swift" Resources/AppIcon.svg "$ICONSET"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-# Ad-hoc signature so macOS runs it locally; use a Developer ID to give it to others without warnings.
-codesign --force --deep --sign - "$APP"
+# Releases are signed with the certificate from make-signing-key.sh (SIGN_IDENTITY, set by release.yml), so every
+# version has the same signature and keeps its keychain access. Without it: an ad-hoc signature, which macOS runs
+# locally but treats as a new app after each build.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    KEYCHAIN_ARGS=()
+    [[ -n "${SIGN_KEYCHAIN:-}" ]] && KEYCHAIN_ARGS=(--keychain "$SIGN_KEYCHAIN")
+    codesign --force --deep --sign "$SIGN_IDENTITY" "${KEYCHAIN_ARGS[@]}" "$APP"
+else
+    codesign --force --deep --sign - "$APP"
+fi
 echo "Built $APP"
 
 # Disk image with the app and a link to /Applications, so installing is one drag.
