@@ -63,10 +63,15 @@ public struct Supplier: Codable, Identifiable, Equatable, Sendable {
         return max(words, letters)
     }
 
+    /// Lowercased and without accents, keeping every other character, so a prefix of it matches a prefix of the name.
+    static func fold(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "de_DE"))
+    }
+
     /// From this similarity on, a name is offered as the likely supplier.
     public static let closeEnough = 0.75
 
-    private static func levenshtein(_ a: [Character], _ b: [Character]) -> Int {
+    static func levenshtein(_ a: [Character], _ b: [Character]) -> Int {
         var row = Array(0...b.count)
         for (i, ca) in a.enumerated() {
             var previous = row[0]
@@ -114,6 +119,42 @@ extension Array where Element == Supplier {
             .map { s in (s, ([s.name] + s.aliases).map { Supplier.similarity(name, $0) }.max() ?? 0) }.max { $0.1 < $1.1 }
         if let best, best.1 >= Supplier.closeEnough { return .close(best.0) }
         return .none
+    }
+
+    /// Suppliers for what is typed in the company field, best first: the name starts with it, then a word of it
+    /// does, then it contains it, then it starts with it give or take a typo, then it is spelled much alike.
+    /// Spellings count like the name; the own company is never offered.
+    public func suggestions(for typed: String, limit: Int = 6) -> [Supplier] {
+        let t = Supplier.fold(typed).trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return [] }
+        let typedChars = Swift.Array(t)
+        func score(_ candidate: String) -> Double {
+            let n = Supplier.fold(candidate)
+            let closeness = Double(t.count) / Double(Swift.max(n.count, 1))
+            if n.hasPrefix(t) { return 4 + closeness }
+            if n.split(separator: " ").contains(where: { $0.hasPrefix(t) }) { return 3 + closeness }
+            if n.contains(t) { return 2 + closeness }
+            if t.count >= 3 {
+                let d = Supplier.levenshtein(typedChars, Swift.Array(n.prefix(t.count)))
+                if d <= Swift.max(1, t.count / 4) { return 1 + (1 - Double(d) / Double(t.count)) }
+            }
+            let sim = Supplier.similarity(typed, candidate)
+            return sim >= 0.5 ? sim : 0
+        }
+        var scored: [(supplier: Supplier, score: Double)] = []
+        for s in self where !OwnCompany.isOwn(s.name) {
+            let best = ([s.name] + s.aliases).map(score).max() ?? 0
+            if best > 0 { scored.append((s, best)) }
+        }
+        scored.sort { a, b in a.score != b.score ? a.score > b.score : a.supplier.name.count < b.supplier.name.count }
+        return scored.prefix(limit).map { $0.supplier }
+    }
+
+    /// The supplier name that starts with what is typed, for completing it in the field; nil when none does.
+    public func completion(for typed: String) -> String? {
+        let t = Supplier.fold(typed)
+        guard !t.isEmpty else { return nil }
+        return suggestions(for: typed).first { Supplier.fold($0.name).hasPrefix(t) && $0.name.count > typed.count }?.name
     }
 
     /// Pairs of suppliers that are probably the same company, most alike first.

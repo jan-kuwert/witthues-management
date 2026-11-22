@@ -252,8 +252,16 @@ public final class Library {
 
     /// PDFs in a folder and its subfolders that were never read.
     public func unknownFiles(in folder: URL) -> [URL] {
-        let known = Set(records.map { URL(fileURLWithPath: $0.filePath).standardizedFileURL.path }).union(ignoredFiles)
-        return Self.pdfs(in: [folder]).filter { !known.contains($0.path) }
+        Self.unknownFiles(in: folder, known: knownPaths)
+    }
+
+    /// Paths of every file the app has read or set aside, for finding unknown files away from the main thread.
+    public var knownPaths: Set<String> {
+        Set(records.map { URL(fileURLWithPath: $0.filePath).standardizedFileURL.path }).union(ignoredFiles)
+    }
+
+    public nonisolated static func unknownFiles(in folder: URL, known: Set<String>) -> [URL] {
+        pdfs(in: [folder]).filter { !known.contains($0.path) }
     }
 
     /// Reads every PDF in the folders and their subfolders with `indexExisting`. Stops between files when the

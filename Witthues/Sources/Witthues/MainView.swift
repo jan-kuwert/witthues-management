@@ -639,7 +639,16 @@ struct InvoiceDetail: View {
     private var form: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                field("Firma (Absender)", text: $fields.seller, copy: true, highlight: similarSupplier != nil)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Firma (Absender)").font(.caption).foregroundStyle(.secondary)
+                    HStack(alignment: .top, spacing: 4) {
+                        SupplierField(text: $fields.seller, placeholder: "Firma (Absender)",
+                                      suggestions: { model.library.suppliers.suggestions(for: $0).map(\.name) },
+                                      completion: { model.library.suppliers.completion(for: $0) },
+                                      highlight: similarSupplier != nil, onCommit: { saveIfChanged() })
+                        CopyButton(value: fields.seller, label: "Firma (Absender)")
+                    }
+                }
                 supplierHint
             }
             field("Rechnungsnummer", text: $fields.invoiceNumber, copy: true)

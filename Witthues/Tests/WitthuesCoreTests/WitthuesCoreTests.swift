@@ -688,3 +688,24 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(throws: UpdateError.self) { try Updates.parse(Data(noZip.utf8)) }
     }
 }
+
+@Suite struct SupplierSuggestionTests {
+    let list = [Supplier(name: "Telekom", aliases: ["Telekom Deutschland GmbH"]), Supplier(name: "Telefonbau Ost"),
+                Supplier(name: "Druckerei Kopp"), Supplier(name: "Verlag Herder"), Supplier(name: "Witthüs")]
+
+    /// The name starting with the typed text comes before one that only contains it; the own company never shows.
+    @Test func rankedByBestMatch() {
+        #expect(list.suggestions(for: "tel").map(\.name) == ["Telekom", "Telefonbau Ost"])
+        #expect(list.suggestions(for: "herd").first?.name == "Verlag Herder")
+        #expect(list.suggestions(for: "deutschland").first?.name == "Telekom")
+        #expect(list.suggestions(for: "witt").isEmpty)
+    }
+
+    /// A typo while typing still finds the supplier, but only a real prefix is completed in the field.
+    @Test func typosAndCompletion() {
+        #expect(list.suggestions(for: "Druckrei").first?.name == "Druckerei Kopp")
+        #expect(list.completion(for: "teleK") == "Telekom")
+        #expect(list.completion(for: "Druckrei") == nil)
+        #expect(list.completion(for: "Telekom") == nil)
+    }
+}

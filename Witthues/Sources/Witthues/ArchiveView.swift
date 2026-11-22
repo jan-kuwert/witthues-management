@@ -2,7 +2,7 @@ import WitthuesCore
 import SwiftUI
 
 /// One table row: an invoice flattened into sortable values.
-struct ArchiveRow: Identifiable {
+struct ArchiveRow: Identifiable, Sendable {
     let id: InvoiceRecord.ID
     let fileName: String
     let folder: String
@@ -53,7 +53,7 @@ enum ArchiveFolders {
         return dir.hasPrefix(base) ? String(dir.dropFirst(base.count)) : dir
     }
 
-    struct Child {
+    struct Child: Sendable {
         var path: String
         /// PDFs on disk inside, subfolders included.
         var files: Int
@@ -63,30 +63,51 @@ enum ArchiveFolders {
         var toCheck: Int
     }
 
+    /// A folder's subfolders and its unknown PDFs, read from disk in the background.
+    struct DiskScan: Sendable {
+        var children: [Child]
+        var unread: [URL]
+    }
+
+    /// What a scan needs from the library, taken on the main thread so the disk is read elsewhere.
+    struct ScanInput: Equatable, Sendable {
+        var folder: String
+        var root: String
+        var known: Set<String>
+        /// Folders (relative) of read invoices that still need a check, once per invoice.
+        var review: [String]
+        /// The unpaid and paid folders, shown first.
+        var first: [String]
+
+        @MainActor init(folder: String, _ library: Library) {
+            self.folder = folder
+            root = library.settings.rootFolder
+            known = library.knownPaths
+            review = library.liveRecords.filter(\.needsReview).map { ArchiveFolders.relative($0.filePath, root: library.settings.rootFolder) }
+            first = [library.settings.unpaidFolder, library.settings.paidFolder]
+        }
+    }
+
     /// Direct subfolders of a folder (relative to the main folder; "" is the main folder itself) on disk, with
-    /// their files. The unpaid and paid folders come first, then newest folders first.
-    @MainActor static func children(of folder: String, _ library: Library) -> [Child] {
-        let root = library.settings.rootFolder
-        guard !root.isEmpty else { return [] }
-        let prefix = folder.isEmpty ? "" : folder + "/"
-        let dir = URL(fileURLWithPath: root).appendingPathComponent(folder)
-        let live = library.liveRecords
+    /// their files, and the folder's own unknown PDFs. The unpaid and paid folders come first, then newest first.
+    nonisolated static func scan(_ input: ScanInput) -> DiskScan {
+        guard !input.root.isEmpty else { return DiskScan(children: [], unread: []) }
+        let prefix = input.folder.isEmpty ? "" : input.folder + "/"
+        let dir = URL(fileURLWithPath: input.root).appendingPathComponent(input.folder)
         var result: [Child] = []
         for u in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
         where (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
             let path = prefix + u.lastPathComponent
-            let check = live.filter { r in
-                let f = relative(r.filePath, root: root)
-                return r.needsReview && (f == path || f.hasPrefix(path + "/"))
-            }.count
-            result.append(Child(path: path, files: Library.pdfs(in: [u]).count, unread: library.unknownFiles(in: u).count, toCheck: check))
+            let check = input.review.filter { $0 == path || $0.hasPrefix(path + "/") }.count
+            let pdfs = Library.pdfs(in: [u])
+            result.append(Child(path: path, files: pdfs.count, unread: pdfs.filter { !input.known.contains($0.path) }.count, toCheck: check))
         }
-        let first = [library.settings.unpaidFolder, library.settings.paidFolder]
-        return result.sorted { a, b in
-            let ia = first.firstIndex(of: a.path) ?? 9, ib = first.firstIndex(of: b.path) ?? 9
+        let children = result.sorted { a, b in
+            let ia = input.first.firstIndex(of: a.path) ?? 9, ib = input.first.firstIndex(of: b.path) ?? 9
             if ia != ib { return ia < ib }
             return a.path.localizedStandardCompare(b.path) == .orderedDescending
         }
+        return DiskScan(children: children, unread: Library.unknownFiles(in: dir, known: input.known))
     }
 
     /// The main folder's own name, such as "Rechnungen".
@@ -117,6 +138,11 @@ struct ArchiveView: View {
     @State private var newName = ""
     /// The invoice opened by double-click, shown with its PDF and details instead of the table.
     @State private var opened: InvoiceRecord.ID?
+    /// The table's rows, built in the background whenever invoices, filters or sorting change.
+    @State private var rows: [ArchiveRow] = []
+    @State private var rowsReady = false
+    /// Subfolders and unknown files of the open folder, read from disk in the background.
+    @State private var disk: ArchiveFolders.DiskScan?
     /// The table's rows, in table order, when the invoice was opened: what „Vorherige“ / „Nächste“ step through.
     @State private var openedList: [InvoiceRecord.ID] = []
     /// Checking the invoices marked „Prüfen“ one after another.
@@ -178,7 +204,7 @@ struct ArchiveView: View {
 
     /// Opens an invoice; the rows shown now are what the arrows step through.
     private func open(_ id: InvoiceRecord.ID) {
-        openedList = filteredRows.map(\.id)
+        openedList = rows.map(\.id)
         opened = id
     }
 
@@ -256,9 +282,16 @@ struct ArchiveView: View {
         if let next = order.first(where: { needsReview(s.ids[$0]) }) { review?.index = next }
     }
 
+    /// Everything the rows depend on; a change rebuilds them in the background.
+    private struct RowsInput: Equatable {
+        var records: [InvoiceRecord]
+        var root: String
+        var filter: SavedView
+        var sortOrder: [KeyPathComparator<ArchiveRow>]
+    }
+
     private var table: some View {
-        let rows = filteredRows
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             folderStrip
             filterBar
             Table(rows, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columns) {
@@ -279,7 +312,9 @@ struct ArchiveView: View {
                     .background(.bar)
             }
             .overlay {
-                if rows.isEmpty {
+                if !rowsReady {
+                    ProgressView("Dateien werden geladen …")
+                } else if rows.isEmpty {
                     if let folder = filter.folder, !unread(folder).isEmpty {
                         ContentUnavailableView {
                             Label("Dateien noch nicht eingelesen", systemImage: "doc.viewfinder")
@@ -296,9 +331,24 @@ struct ArchiveView: View {
                 }
             }
         }
+        // The view opens at once; rows and folder contents follow when they are ready.
+        .task(id: RowsInput(records: model.library.records, root: model.library.settings.rootFolder, filter: filter, sortOrder: sortOrder)) {
+            let input = RowsInput(records: model.library.records, root: model.library.settings.rootFolder, filter: filter, sortOrder: sortOrder)
+            let built = await Task.detached(priority: .userInitiated) { Self.buildRows(input) }.value
+            guard !Task.isCancelled else { return }
+            rows = built
+            rowsReady = true
+        }
+        .task(id: filter.folder.map { ArchiveFolders.ScanInput(folder: $0, model.library) }) {
+            guard let folder = filter.folder else { disk = nil; return }
+            let input = ArchiveFolders.ScanInput(folder: folder, model.library)
+            let scanned = await Task.detached(priority: .utility) { ArchiveFolders.scan(input) }.value
+            guard !Task.isCancelled else { return }
+            disk = scanned
+        }
         .navigationTitle(title)
         .toolbar {
-            let check = toCheck(filteredRows)
+            let check = toCheck(rows)
             if !check.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
                     Button { review = ReviewSession(ids: check) } label: {
@@ -332,7 +382,7 @@ struct ArchiveView: View {
 
     /// PDFs in the folder (relative to the main folder) that were never read.
     private func unread(_ folder: String) -> [URL] {
-        model.library.unknownFiles(in: URL(fileURLWithPath: model.library.settings.rootFolder).appendingPathComponent(folder))
+        disk?.unread ?? []
     }
 
     /// Reads the folder's unknown files in place, after asking which stage they get.
@@ -432,9 +482,9 @@ struct ArchiveView: View {
 
     // MARK: - Filtering
 
-    private var filteredRows: [ArchiveRow] {
-        let root = model.library.settings.rootFolder
-        var rows = model.library.liveRecords.map { ArchiveRow($0, folder: ArchiveFolders.relative($0.filePath, root: root)) }
+    private nonisolated static func buildRows(_ input: RowsInput) -> [ArchiveRow] {
+        let filter = input.filter
+        var rows = input.records.filter { !$0.fileMissing }.map { ArchiveRow($0, folder: ArchiveFolders.relative($0.filePath, root: input.root)) }
         if let folder = filter.folder, !folder.isEmpty { rows = rows.filter { $0.folder == folder || $0.folder.hasPrefix(folder + "/") } }
         rows = rows.filter { filter.matches($0.record, folder: $0.folder) }
         let q = filter.search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -445,7 +495,7 @@ struct ArchiveView: View {
                     .contains { $0.lowercased().contains(q) }
             }
         }
-        return rows.sorted(using: sortOrder)
+        return rows.sorted(using: input.sortOrder)
     }
 
     /// "9 Dateien · 1.869,68 €", like Finder's status bar. Sums only the most common currency.
@@ -657,7 +707,7 @@ struct ArchiveView: View {
     /// Path bar and the folder's subfolders as Finder-like tiles, shown when a folder is open.
     @ViewBuilder private var folderStrip: some View {
         if let folder = filter.folder {
-            let subs = ArchiveFolders.children(of: folder, model.library)
+            let subs = disk?.children ?? []
             VStack(alignment: .leading, spacing: 10) {
                 pathBar(folder)
                 if !subs.isEmpty {
@@ -674,7 +724,7 @@ struct ArchiveView: View {
             let waiting = unread(folder)
             if model.isReadingPast {
                 MailProgressPanel().padding(.horizontal, 14).padding(.top, 8)
-            } else if !waiting.isEmpty, !filteredRows.isEmpty {
+            } else if !waiting.isEmpty, !rows.isEmpty {
                 HStack {
                     Label(waiting.count == 1 ? "1 Datei in diesem Ordner ist noch nicht eingelesen." : "\(waiting.count) Dateien in diesem Ordner sind noch nicht eingelesen.",
                           systemImage: "doc.viewfinder")
