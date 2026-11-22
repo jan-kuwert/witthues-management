@@ -117,6 +117,16 @@ struct ArchiveView: View {
     @State private var newName = ""
     /// The invoice opened by double-click, shown with its PDF and details instead of the table.
     @State private var opened: InvoiceRecord.ID?
+    /// The table's rows, in table order, when the invoice was opened: what „Vorherige“ / „Nächste“ step through.
+    @State private var openedList: [InvoiceRecord.ID] = []
+    /// Checking the invoices marked „Prüfen“ one after another.
+    @State private var review: ReviewSession?
+
+    struct ReviewSession {
+        /// Every invoice that needed checking when the session started, checked ones included.
+        var ids: [InvoiceRecord.ID]
+        var index = 0
+    }
     @State private var stageRequest: StageRequest?
 
     init(start: SavedView, viewID: SavedView.ID?,
@@ -146,7 +156,9 @@ struct ArchiveView: View {
     static let defaultHidden: Set<String> = ["currency", "source", "check", "subject", "imported"]
 
     var body: some View {
-        if let opened, model.library.records.contains(where: { $0.id == opened }) {
+        if let review, review.ids.indices.contains(review.index) {
+            reviewView(review)
+        } else if let opened, model.library.records.contains(where: { $0.id == opened }) {
             // Same view as in the invoice lists, locked until the user unlocks it.
             InvoiceDetail(id: opened, startLocked: true)
                 .id(opened)
@@ -157,10 +169,91 @@ struct ArchiveView: View {
                             .help("Zurück zur Tabelle")
                             .keyboardShortcut("[", modifiers: .command)
                     }
+                    ToolbarItem(placement: .navigation) { stepper(opened) }
                 }
         } else {
             table
         }
+    }
+
+    /// Opens an invoice; the rows shown now are what the arrows step through.
+    private func open(_ id: InvoiceRecord.ID) {
+        openedList = filteredRows.map(\.id)
+        opened = id
+    }
+
+    /// „‹ 3 von 12 ›“: the previous and next file of the table without going back to it.
+    private func stepper(_ id: InvoiceRecord.ID) -> some View {
+        let i = openedList.firstIndex(of: id)
+        return HStack(spacing: 6) {
+            Button { if let i { opened = openedList[i - 1] } } label: { Image(systemName: "chevron.up") }
+                .disabled((i ?? 0) == 0)
+                .help("Vorherige Datei (⌘↑)")
+                .keyboardShortcut(.upArrow, modifiers: .command)
+            Text(i.map { "\($0 + 1) von \(openedList.count)" } ?? "–")
+                .monospacedDigit().foregroundStyle(.secondary).fixedSize()
+            Button { if let i { opened = openedList[i + 1] } } label: { Image(systemName: "chevron.down") }
+                .disabled(i.map { $0 + 1 >= openedList.count } ?? true)
+                .help("Nächste Datei (⌘↓)")
+                .keyboardShortcut(.downArrow, modifiers: .command)
+        }
+        .padding(.horizontal, 6)
+    }
+
+    // MARK: - Checking one after another
+
+    /// Invoices of the table that still need checking.
+    private func toCheck(_ rows: [ArchiveRow]) -> [InvoiceRecord.ID] {
+        rows.filter { $0.record.needsReview }.map(\.id)
+    }
+
+    private func needsReview(_ id: InvoiceRecord.ID) -> Bool {
+        model.library.records.first { $0.id == id }?.needsReview ?? false
+    }
+
+    /// One invoice at a time with a bar: where the user is, how many are checked, back and forth, done.
+    private func reviewView(_ s: ReviewSession) -> some View {
+        let id = s.ids[s.index]
+        let done = s.ids.filter { !needsReview($0) }.count
+        let allDone = done == s.ids.count
+        return VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("Rechnung \(s.index + 1) von \(s.ids.count)").fontWeight(.semibold).monospacedDigit()
+                ProgressView(value: Double(done), total: Double(s.ids.count))
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 220)
+                Text(allDone ? "Alle geprüft" : "\(done) geprüft · \(s.ids.count - done) offen")
+                    .font(.callout).foregroundStyle(allDone ? .green : .secondary).monospacedDigit()
+                if !needsReview(id) {
+                    Label("Diese ist geprüft", systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green)
+                }
+                Spacer()
+                Button { review?.index -= 1 } label: { Label("Vorherige", systemImage: "chevron.left") }
+                    .disabled(s.index == 0)
+                    .keyboardShortcut(.upArrow, modifiers: .command)
+                Button { review?.index += 1 } label: { Label("Nächste", systemImage: "chevron.right") }
+                    .disabled(s.index + 1 >= s.ids.count)
+                    .keyboardShortcut(.downArrow, modifiers: .command)
+                if allDone {
+                    Button("Fertig") { review = nil }.buttonStyle(.glassProminent)
+                } else {
+                    Button("Beenden") { review = nil }.buttonStyle(.glass)
+                }
+            }
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(.bar)
+            Divider()
+            InvoiceDetail(id: id, onReviewed: { nextToCheck() }).id(id)
+        }
+        .navigationTitle("Rechnungen prüfen")
+    }
+
+    /// After „Geprüft, weiter“: the next invoice still to check, after this one first, then from the start.
+    private func nextToCheck() {
+        guard let s = review else { return }
+        let order = Array(s.ids.indices.dropFirst(s.index + 1)) + Array(s.ids.indices.prefix(s.index))
+        if let next = order.first(where: { needsReview(s.ids[$0]) }) { review?.index = next }
     }
 
     private var table: some View {
@@ -176,7 +269,7 @@ struct ArchiveView: View {
                 contextMenu(ids)
             } primaryAction: { ids in
                 // Double-click or Return opens the invoice with its PDF and details.
-                if let id = ids.first { opened = id }
+                if let id = ids.first { open(id) }
             }
             .safeAreaInset(edge: .bottom) {
                 Text(footer(rows))
@@ -205,6 +298,17 @@ struct ArchiveView: View {
         }
         .navigationTitle(title)
         .toolbar {
+            let check = toCheck(filteredRows)
+            if !check.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { review = ReviewSession(ids: check) } label: {
+                        Label(check.count == 1 ? "1 prüfen" : "\(check.count) prüfen", systemImage: "checklist")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .tint(.orange)
+                    .help("Alle Rechnungen mit „Prüfen“ nacheinander ansehen und bestätigen")
+                }
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 if let folder = filter.folder, !folder.isEmpty, viewID == nil || savedView?.isFolder == true {
                     let starred = folderView(folder) != nil
@@ -692,7 +796,7 @@ struct ArchiveView: View {
         let picked = records(ids)
         if !picked.isEmpty {
             if picked.count == 1, let r = picked.first {
-                Button("Öffnen") { opened = r.id }
+                Button("Öffnen") { open(r.id) }
             }
             Button(picked.count == 1 ? "PDF öffnen" : "\(picked.count) Dateien öffnen") { picked.forEach { NSWorkspace.shared.open($0.fileURL) } }
             Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting(picked.map(\.fileURL)) }

@@ -517,6 +517,8 @@ struct InvoiceDetail: View {
     @State private var locked: Bool
     /// Opened locked (archived, deleted, from the archive table): shows „Bearbeiten“ / „Fertig“.
     private let lockable: Bool
+    /// Set while checking invoices one after another: called after „Geprüft, weiter“ to show the next one.
+    private let onReviewed: (() -> Void)?
     @State private var fields = InvoiceFields()
     @State private var totalText = ""
     @State private var hasDate = true
@@ -527,7 +529,8 @@ struct InvoiceDetail: View {
     /// The field being typed in; leaving it saves, so lists and the dashboard follow right away.
     @FocusState private var focusedField: String?
 
-    init(id: InvoiceRecord.ID, startLocked: Bool = false) {
+    init(id: InvoiceRecord.ID, startLocked: Bool = false, onReviewed: (() -> Void)? = nil) {
+        self.onReviewed = onReviewed
         self.id = id
         _locked = State(initialValue: startLocked)
         lockable = startLocked
@@ -620,11 +623,13 @@ struct InvoiceDetail: View {
             Label("Bitte prüfen", systemImage: "exclamationmark.triangle.fill").font(.headline).foregroundStyle(.orange)
             ForEach(r.reviewReasons, id: \.self) { Text("• \($0)").font(.callout) }
             Text("Zählt erst nach der Prüfung in der Übersicht mit.").font(.caption).foregroundStyle(.secondary)
-            Button("Geprüft, passt so") {
+            Button(onReviewed == nil ? "Geprüft, passt so" : "Geprüft, weiter") {
                 saveIfChanged()
                 model.library.markReviewed(id)
+                onReviewed?()
             }
-            .buttonStyle(.glass)
+            .buttonStyle(.glassProminent)
+            .keyboardShortcut(onReviewed == nil ? nil : KeyboardShortcut(.return, modifiers: .command))
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
