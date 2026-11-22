@@ -515,6 +515,8 @@ struct InvoiceDetail: View {
     @Environment(AppModel.self) private var model
     let id: InvoiceRecord.ID
     @State private var locked: Bool
+    /// Opened locked (archived, deleted, from the archive table): shows „Bearbeiten“ / „Fertig“.
+    private let lockable: Bool
     @State private var fields = InvoiceFields()
     @State private var totalText = ""
     @State private var hasDate = true
@@ -528,6 +530,7 @@ struct InvoiceDetail: View {
     init(id: InvoiceRecord.ID, startLocked: Bool = false) {
         self.id = id
         _locked = State(initialValue: startLocked)
+        lockable = startLocked
     }
 
     private var record: InvoiceRecord? { model.library.records.first { $0.id == id } }
@@ -574,14 +577,23 @@ struct InvoiceDetail: View {
 
     private func header(_ r: InvoiceRecord) -> some View {
         HStack(spacing: 8) {
-            Button { locked.toggle() } label: {
-                Label(locked ? "Gesperrt" : "Bearbeiten", systemImage: locked ? "lock.fill" : "lock.open")
-                    .font(.caption)
+            if lockable {
+                // The button says what it does: start editing, or save and lock again.
+                if locked {
+                    Button { locked = false } label: {
+                        Label("Bearbeiten", systemImage: "pencil")
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(r.fileMissing)
+                    .help("Felder freigeben, um sie zu ändern")
+                } else {
+                    Button { saveIfChanged(); locked = true } label: {
+                        Label("Fertig", systemImage: "checkmark")
+                    }
+                    .buttonStyle(.glass)
+                    .help("Änderungen speichern und wieder sperren")
+                }
             }
-            .buttonStyle(.glass)
-            .controlSize(.small)
-            .disabled(r.fileMissing)
-            .help(locked ? "Entsperren, um die Felder zu bearbeiten" : "Sperren, damit nichts versehentlich geändert wird")
             Label(r.source.label, systemImage: r.source == .eInvoiceXML ? "checkmark.seal.fill" : r.source == .appleIntelligence ? "apple.intelligence" : "text.viewfinder")
                 .font(.caption).lineLimit(1)
                 .padding(.horizontal, 10).padding(.vertical, 5)
