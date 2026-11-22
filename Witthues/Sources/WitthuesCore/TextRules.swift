@@ -2,8 +2,13 @@ import Foundation
 
 /// Public helpers for the app's edit form.
 public enum InvoiceText {
-    /// Parses \"1.234,56\" or \"1,234.56\" style amounts.
+    /// Parses "1.234,56", "1,234.56", "175,5" or "175.5".
     public static func amount(_ s: String) -> Decimal? { TextRules.parseAmount(s) }
+
+    /// "175,50": two decimals with a comma and no grouping, so the text reads back as the same amount.
+    public static func editableAmount(_ d: Decimal) -> String {
+        d.formatted(.number.precision(.fractionLength(2)).grouping(.never).locale(Locale(identifier: "de_DE")))
+    }
 }
 
 /// Rule-based extraction from invoice text in German, English, French, Spanish, Italian and Dutch.
@@ -205,14 +210,20 @@ public enum TextRules {
         return parseAmount(g[1]).map { ($0, currency) }
     }
 
-    /// "1.234,56", "1,234.56", "1 234,56", "1234.56" → 1234.56
+    /// "1.234,56", "1,234.56", "1 234,56", "175,5" or "175.5": `.` and `,` both work as decimal separator. The last one is
+    /// the decimal separator when one or two digits follow it, or when the other sign comes before it
+    /// ("1.234,567"); otherwise ("1.250") all of them group thousands.
     static func parseAmount(_ raw: String) -> Decimal? {
-        var s = raw.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "'", with: "")
-        if let last = s.lastIndex(where: { $0 == "," || $0 == "." }), s.distance(from: last, to: s.endIndex) == 3 {
+        var s = raw.filter { !$0.isWhitespace && $0 != "'" && $0 != "€" }
+        if let last = s.lastIndex(where: { $0 == "," || $0 == "." }) {
             let decimals = String(s[s.index(after: last)...])
-            s = String(s[..<last]).replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: "") + "." + decimals
-        } else {
-            s = s.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: "")
+            let head = String(s[..<last])
+            let otherSign: Character = s[last] == "," ? "." : ","
+            if (1...2).contains(decimals.count) || head.contains(otherSign) {
+                s = head.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: "") + "." + decimals
+            } else {
+                s = s.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: "")
+            }
         }
         return Decimal(string: s, locale: Locale(identifier: "en_US_POSIX"))
     }

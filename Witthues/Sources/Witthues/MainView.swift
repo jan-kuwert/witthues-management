@@ -522,6 +522,8 @@ struct InvoiceDetail: View {
     /// The file name without extension, as shown in the field.
     @State private var fileName = ""
     @State private var loaded = false
+    /// The field being typed in; leaving it saves, so lists and the dashboard follow right away.
+    @FocusState private var focusedField: String?
 
     init(id: InvoiceRecord.ID, startLocked: Bool = false) {
         self.id = id
@@ -632,12 +634,18 @@ struct InvoiceDetail: View {
                     .labelsHidden().disabled(!hasDate)
             }
             HStack {
-                field("Betrag", text: $totalText, copy: true)
+                field("Betrag", text: $totalText, copy: true, highlight: amountInvalid)
                 field("Währung", text: $fields.currency).frame(width: 80)
             }
         }
         .padding(12)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        .onChange(of: focusedField) { old, _ in if old != nil { saveIfChanged() } }
+    }
+
+    /// Text in the Betrag field that is not an amount; the saved amount stays until it is fixed.
+    private var amountInvalid: Bool {
+        !totalText.trimmingCharacters(in: .whitespaces).isEmpty && TextRulesBridge.amount(totalText) == nil
     }
 
     /// A known supplier much like the typed company name, probably the same company spelled differently.
@@ -682,8 +690,10 @@ struct InvoiceDetail: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 4) {
-                // Return saves right away.
-                TextField(label, text: text).textFieldStyle(.roundedBorder).labelsHidden().onSubmit { saveIfChanged() }
+                // Return or leaving the field saves right away.
+                TextField(label, text: text).textFieldStyle(.roundedBorder).labelsHidden()
+                    .focused($focusedField, equals: label)
+                    .onSubmit { saveIfChanged() }
                     .overlay {
                         if highlight { RoundedRectangle(cornerRadius: 6).strokeBorder(.orange, lineWidth: 2).allowsHitTesting(false) }
                     }
@@ -868,7 +878,7 @@ struct InvoiceDetail: View {
 
     private var editedFields: InvoiceFields {
         var f = fields
-        f.total = TextRulesBridge.amount(totalText)
+        f.total = totalText.trimmingCharacters(in: .whitespaces).isEmpty ? nil : TextRulesBridge.amount(totalText) ?? fields.total
         if !hasDate { f.invoiceDate = nil }
         f.currency = f.currency.uppercased()
         return f
@@ -876,7 +886,7 @@ struct InvoiceDetail: View {
 
     private func load(_ r: InvoiceRecord) {
         fields = r.fields
-        totalText = r.fields.total.map { NSDecimalNumber(decimal: $0).stringValue } ?? ""
+        totalText = r.fields.total.map(InvoiceText.editableAmount) ?? ""
         hasDate = r.fields.invoiceDate != nil
         paidDate = Date()
         fileName = currentName(r)

@@ -78,9 +78,18 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(!x.isInvoice)
     }
 
-    @Test(arguments: [("1.234,56", "1234.56"), ("1,234.56", "1234.56"), ("1 234,56", "1234.56"), ("12,50", "12.50"), ("12.50", "12.50")])
+    @Test(arguments: [("1.234,56", "1234.56"), ("1,234.56", "1234.56"), ("1 234,56", "1234.56"), ("12,50", "12.50"), ("12.50", "12.50"),
+                      // Typed by hand: either sign as decimal separator, one decimal is enough.
+                      ("175,5", "175.5"), ("175.5", "175.5"), ("1.234,5", "1234.5"), ("1250", "1250"), ("1.250", "1250")])
     func amounts(raw: String, expected: String) {
         #expect(TextRules.parseAmount(raw) == Decimal(string: expected, locale: Locale(identifier: "en_US_POSIX")))
+    }
+
+    /// The Betrag field shows two decimals and reads back as the same amount, so saving another field keeps it.
+    @Test func editableAmountReadsBack() {
+        let d = Decimal(string: "1234.5", locale: Locale(identifier: "en_US_POSIX"))!
+        #expect(InvoiceText.editableAmount(d) == "1234,50")
+        #expect(InvoiceText.amount(InvoiceText.editableAmount(d)) == d)
     }
 }
 
