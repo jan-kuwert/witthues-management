@@ -145,6 +145,10 @@ struct MainView: View {
             drag.install()
         }
         .onDisappear { drag.uninstall() }
+        // A deleted view or folder entry that is open shows all files instead.
+        .onChange(of: model.library.views) {
+            if case .view(let id) = sidebar, !model.library.views.contains(where: { $0.id == id }) { sidebar = .archive(nil) }
+        }
         .onChange(of: sidebar) {
             selection = pendingOpen
             pendingOpen = nil

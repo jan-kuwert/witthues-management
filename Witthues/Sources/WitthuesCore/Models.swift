@@ -488,3 +488,35 @@ public struct SavedView: Codable, Identifiable, Equatable, Sendable {
         folder == other.folder && rules == other.rules && matchAny == other.matchAny && search == other.search
     }
 }
+
+/// One change for many invoices at once; nil leaves that part of each invoice as it is.
+public struct BulkEdit: Equatable, Sendable {
+    /// The company (supplier) all of them get.
+    public var company: String?
+    /// true marks them paid on `paidDate`, false marks them open again.
+    public var paid: Bool?
+    public var paidDate: Date
+    public var printed: Bool?
+    /// Marks them as checked („Geprüft“).
+    public var checked: Bool
+
+    public init(company: String? = nil, paid: Bool? = nil, paidDate: Date = Date(), printed: Bool? = nil, checked: Bool = false) {
+        self.company = company
+        self.paid = paid
+        self.paidDate = paidDate
+        self.printed = printed
+        self.checked = checked
+    }
+
+    public var isEmpty: Bool { company == nil && paid == nil && printed == nil && !checked }
+
+    /// The changes in words, one per line, for the confirmation.
+    public var summary: [String] {
+        var lines: [String] = []
+        if let company { lines.append("Firma: \(company.isEmpty ? "leer" : company)") }
+        if let paid { lines.append(paid ? "Bezahlt am \(paidDate.formatted(date: .numeric, time: .omitted))" : "Wieder offen (nicht bezahlt)") }
+        if let printed { lines.append(printed ? "Als gedruckt markiert" : "Als nicht gedruckt markiert") }
+        if checked { lines.append("Als geprüft markiert") }
+        return lines
+    }
+}

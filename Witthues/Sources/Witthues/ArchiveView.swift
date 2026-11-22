@@ -133,6 +133,12 @@ struct ArchiveView: View {
     @State private var sortOrder = [KeyPathComparator(\ArchiveRow.invoiceDate, order: .reverse)]
     @State private var columns: TableColumnCustomization<ArchiveRow> = ArchiveView.loadColumns()
     @State private var naming = false
+    /// „Ansichten verwalten“, renaming the open view, and confirming its deletion.
+    @State private var managingViews = false
+    @State private var renamingView = false
+    @State private var deletingView = false
+    /// The invoices being edited together.
+    @State private var bulkEdit: BulkEditRequest?
     /// The filter rule whose editor is open.
     @State private var editingRule: FilterRule.ID?
     @State private var newName = ""
@@ -329,11 +335,19 @@ struct ArchiveView: View {
                 if let id = ids.first { open(id) }
             }
             .safeAreaInset(edge: .bottom) {
-                Text(footer(rows))
-                    .font(.callout).foregroundStyle(.secondary).monospacedDigit()
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(.bar)
+                HStack(spacing: 12) {
+                    Text(footer(rows))
+                        .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                    if selection.count > 1 {
+                        Text("\(selection.count) ausgewählt").font(.callout.weight(.semibold)).monospacedDigit()
+                        Button("Gemeinsam bearbeiten …") { editTogether(selection) }
+                            .controlSize(.small)
+                            .help("Firma, Status, Gedruckt oder Geprüft für alle ausgewählten Rechnungen setzen")
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(.bar)
             }
             .overlay {
                 if !rowsReady {
@@ -362,6 +376,9 @@ struct ArchiveView: View {
             guard !Task.isCancelled else { return }
             rows = built
             rowsReady = true
+            // Rows a filter hid are no longer selected, so counts and „Gemeinsam bearbeiten“ only cover what is shown.
+            let shown = Set(built.map(\.id))
+            if !selection.isSubset(of: shown) { selection.formIntersection(shown) }
         }
         .task(id: ScanKey(folder: filter.folder, records: model.library.records, ignored: model.library.ignoredFiles, root: model.library.settings.rootFolder)) {
             guard let folder = filter.folder else { disk = nil; return }
@@ -399,6 +416,7 @@ struct ArchiveView: View {
                        note: "Speichert den aktuellen Ordner und die Filter. Die Ansicht bekommt einen Stern und erscheint in der Seitenleiste unter „Ansichten“.",
                        name: newName, icon: "star.fill") { name, icon in saveNewView(name, icon) }
         }
+        .sheet(item: $bulkEdit) { BulkEditSheet(ids: $0.ids) }
         .onChange(of: columns) { saveColumns() }
         .stagePrompt($stageRequest)
     }
@@ -558,8 +576,52 @@ struct ArchiveView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            viewControls
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    /// The open saved view, with saving its changed filters and everything else about it in one menu;
+    /// without one, saving the current filters as a view.
+    @ViewBuilder private var viewControls: some View {
+        if let savedView, savedView.isFolder != true {
+            HStack(spacing: 6) {
+                if isModified {
+                    Button("Verwerfen") { filter = savedView }
+                        .help("Die Filter wieder so wie in der gespeicherten Ansicht")
+                    Button("Speichern") { updateView() }
+                        .buttonStyle(.glassProminent)
+                        .help("Die geänderten Filter in „\(savedView.name)“ speichern")
+                }
+                Menu {
+                    Button("Name und Symbol ändern …") { renamingView = true }
+                    Button(savedView.starred ? "Aus der Seitenleiste entfernen" : "In der Seitenleiste zeigen") { toggleStar(savedView.id) }
+                    Button("Als neue Ansicht speichern …") { askName() }
+                    Divider()
+                    Button("Ansicht löschen …", role: .destructive) { deletingView = true }
+                } label: {
+                    Label(isModified ? savedView.name + " (geändert)" : savedView.name, systemImage: savedView.symbol)
+                }
+                .fixedSize()
+                .help("Gespeicherte Ansicht: umbenennen, Stern setzen oder löschen")
+            }
+            .sheet(isPresented: $renamingView) {
+                ViewEditor(title: "Ansicht bearbeiten", name: savedView.name, icon: savedView.symbol) { name, icon in
+                    guard let i = model.library.views.firstIndex(where: { $0.id == savedView.id }) else { return }
+                    model.library.views[i].name = name
+                    model.library.views[i].icon = icon
+                }
+            }
+            .alert("„\(savedView.name)“ löschen?", isPresented: $deletingView) {
+                Button("Löschen", role: .destructive) { model.library.views.removeAll { $0.id == savedView.id } }
+                Button("Abbrechen", role: .cancel) {}
+            } message: {
+                Text("Die Rechnungen bleiben erhalten; nur die gespeicherten Filter werden gelöscht.")
+            }
+        } else if !filter.rules.isEmpty || !filter.search.isEmpty {
+            Button { askName() } label: { Label("Als Ansicht speichern …", systemImage: "star") }
+                .help("Diese Filter unter einem Namen speichern; die Ansicht erscheint in der Seitenleiste")
+        }
     }
 
     private var filterMenu: some View {
@@ -654,32 +716,25 @@ struct ArchiveView: View {
         filter.rules.removeAll { $0.id == id }
     }
 
-    /// Save the filters as a view, update or revert the open view, or open another one.
+    /// Opens a saved view, or all of them for starring, renaming and deleting.
     private var viewsMenu: some View {
         Menu {
-            if let savedView {
-                Button("„\(savedView.name)“ aktualisieren") { updateView() }.disabled(!isModified)
-                Button("Änderungen verwerfen") { filter = savedView }.disabled(!isModified)
-                Button(savedView.starred ? "Stern entfernen" : "Mit Stern versehen (in Seitenleiste)") { toggleStar(savedView.id) }
-                Divider()
-                Button("Als neue Ansicht speichern …") { askName() }
-            } else {
-                Button("Ansicht speichern …") { askName() }
+            let views = model.library.views.filter { $0.isFolder != true }
+            if views.isEmpty {
+                Text("Noch keine gespeicherten Ansichten")
             }
-            if !model.library.views.isEmpty {
-                Divider()
-                Section("Gespeicherte Ansichten") {
-                    ForEach(model.library.views.filter { $0.isFolder != true }) { v in
-                        Button { showView(v.id) } label: {
-                            Label(v.name, systemImage: v.symbol)
-                        }
-                    }
-                }
+            ForEach(views) { v in
+                Button { showView(v.id) } label: { Label(v.name, systemImage: v.symbol) }
             }
+            Divider()
+            Button("Aktuelle Filter als Ansicht speichern …") { askName() }
+                .disabled(filter.rules.isEmpty && filter.search.isEmpty)
+            Button("Ansichten verwalten …") { managingViews = true }
         } label: {
-            Label(isModified ? "Ansicht (geändert)" : "Ansichten", systemImage: isModified ? "bookmark.fill" : "bookmark")
+            Label("Ansichten", systemImage: "bookmark")
         }
-        .help("Filter als benannte Ansicht speichern oder gespeicherte Ansicht öffnen")
+        .help("Gespeicherte Ansicht öffnen oder Ansichten verwalten")
+        .sheet(isPresented: $managingViews) { ViewsManager(open: showView) }
     }
 
     private func askName() {
@@ -870,6 +925,9 @@ struct ArchiveView: View {
         if !picked.isEmpty {
             if picked.count == 1, let r = picked.first {
                 Button("Öffnen") { open(r.id) }
+            } else {
+                Button("\(picked.count) gemeinsam bearbeiten …") { editTogether(ids) }
+                Divider()
             }
             Button(picked.count == 1 ? "PDF öffnen" : "\(picked.count) Dateien öffnen") { picked.forEach { NSWorkspace.shared.open($0.fileURL) } }
             Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting(picked.map(\.fileURL)) }
@@ -894,6 +952,11 @@ struct ArchiveView: View {
                 do { try model.library.trash(picked.map(\.id)) } catch { model.lastError = error.localizedDescription }
             }
         }
+    }
+
+    /// Opens „Gemeinsam bearbeiten“ for the invoices, in table order.
+    private func editTogether(_ ids: Set<InvoiceRecord.ID>) {
+        bulkEdit = BulkEditRequest(ids: rows.map(\.id).filter(ids.contains))
     }
 
     private func records(_ ids: Set<InvoiceRecord.ID>) -> [InvoiceRecord] {

@@ -184,6 +184,32 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         else { Issue.record("a new invoice must still be filed"); return }
     }
 
+    @Test func bulkEditChangesOnlyTheSelectedInvoices() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
+        let ex = Extractor(useAppleIntelligence: false)
+        var ids: [InvoiceRecord.ID] = []
+        for name in ["german.pdf", "english.pdf", "zugferd.pdf"] {
+            guard case .filed(let r) = try await lib.ingest(data: try fixture(name), fileName: name, origin: MailOrigin(), extractor: ex)
+            else { Issue.record("\(name) not filed"); return }
+            ids.append(r.id)
+        }
+        let untouched = try #require(lib.records.first { $0.id == ids[2] })
+        let problems = lib.apply(BulkEdit(company: "Gemeinsam GmbH", paid: true, paidDate: day(2026, 5, 4), printed: true), to: Array(ids.prefix(2)))
+        #expect(problems.isEmpty)
+        for id in ids.prefix(2) {
+            let r = try #require(lib.records.first { $0.id == id })
+            #expect(r.fields.seller == "Gemeinsam GmbH" && r.status == .paid && r.paidDate == day(2026, 5, 4) && r.printedAt != nil)
+            // The file follows: paid folder, company in its name (the name template drops „GmbH“).
+            #expect(r.filePath.contains("/01 Bezahlt/") && r.fileURL.lastPathComponent.contains(" Gemeinsam "))
+            #expect(FileManager.default.fileExists(atPath: r.filePath))
+        }
+        #expect(lib.records.first { $0.id == ids[2] } == untouched)
+        // The typed company is learnt as a supplier, once.
+        #expect(lib.suppliers.filter { $0.name == "Gemeinsam GmbH" }.count == 1)
+    }
+
     @Test func folderFileThatIsNoInvoiceCanBeDeclaredOne() async throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let lib = Library(directory: tmp.appendingPathComponent("data"))

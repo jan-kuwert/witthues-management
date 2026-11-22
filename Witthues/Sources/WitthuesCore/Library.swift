@@ -464,6 +464,27 @@ public final class Library {
         save()
     }
 
+    /// Applies the same change to many invoices at once. Returns one problem per invoice that could not be
+    /// changed (such as a file that cannot be moved); the others are changed anyway.
+    @discardableResult
+    public func apply(_ edit: BulkEdit, to ids: [InvoiceRecord.ID]) -> [String] {
+        var problems: [String] = []
+        for id in ids {
+            guard let r = records.first(where: { $0.id == id }) else { continue }
+            var fields = r.fields
+            if let company = edit.company { fields.seller = company }
+            let status = edit.paid.map { $0 ? InvoiceStatus.paid : .unpaid } ?? r.status
+            let paidDate = edit.paid == true ? edit.paidDate : r.paidDate
+            if fields != r.fields || status != r.status || paidDate != r.paidDate {
+                do { try update(id, fields: fields, status: status, paidDate: paidDate, name: r.customName) }
+                catch { problems.append("\(r.fileURL.lastPathComponent): \(error.localizedDescription)") }
+            }
+            if edit.checked { markReviewed(id) }
+        }
+        if let printed = edit.printed { setPrinted(ids, printed) }
+        return problems
+    }
+
     public func markReviewed(_ id: InvoiceRecord.ID) {
         guard let i = records.firstIndex(where: { $0.id == id }) else { return }
         records[i].reviewReasons = []
