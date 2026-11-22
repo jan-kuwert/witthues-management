@@ -360,13 +360,19 @@ struct MainView: View {
                  r.fields.total.map { "\($0)" } ?? ""].contains { $0.lowercased().contains(q) }
             }
         }
+        // Sort keys are worked out once per invoice, not on every comparison, so switching lists stays instant.
+        // Open invoices with Skonto first, earliest deadline first, so no saving is missed; then by date.
         let now = Date()
-        return list.sorted { a, b in
-            // Open invoices with Skonto first, earliest deadline first, so no saving is missed; then by date.
-            if sort == .skonto, let first = InvoiceRecord.bySkontoDeadline(a, b, on: now) { return first }
-            let da = a.fields.invoiceDate ?? a.importedAt, db = b.fields.invoiceDate ?? b.importedAt
-            return sort == .oldest ? da < db : da > db
+        let keyed = list.map { r -> (r: InvoiceRecord, skonto: Int, deadline: Date, date: Date) in
+            let offer = sort == .skonto ? r.skontoOffer(on: now) : nil
+            return (r, offer == nil ? 2 : (offer?.deadline == nil ? 1 : 0), offer?.deadline ?? .distantFuture,
+                    r.fields.invoiceDate ?? r.importedAt)
         }
+        return keyed.sorted { a, b in
+            if a.skonto != b.skonto { return a.skonto < b.skonto }
+            if a.deadline != b.deadline { return a.deadline < b.deadline }
+            return sort == .oldest ? a.date < b.date : a.date > b.date
+        }.map(\.r)
     }
 }
 

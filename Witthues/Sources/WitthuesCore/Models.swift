@@ -236,19 +236,22 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
         /// Conditions offered for this field; the first is the default.
         public var ops: [Op] {
             switch kind {
-            case .text: return [.contains, .notContains, .equals, .notEquals]
-            case .number: return [.greater, .less, .equals, .notEquals]
-            case .date: return [.equals, .notEquals, .before, .after]
+            case .text: return [.contains, .notContains, .equals, .notEquals, .isEmpty, .isNotEmpty]
+            case .number: return [.greater, .less, .equals, .notEquals, .isEmpty, .isNotEmpty]
+            case .date: return [.equals, .notEquals, .before, .after, .isEmpty, .isNotEmpty]
             case .status, .source, .flag: return [.equals, .notEquals]
             }
         }
     }
 
     public enum Op: String, Codable, Sendable {
-        case contains, notContains, equals, notEquals, greater, less, before, after
+        case contains, notContains, equals, notEquals, greater, less, before, after, isEmpty, isNotEmpty
 
         /// Excludes what it names.
-        public var isNegative: Bool { self == .notContains || self == .notEquals }
+        public var isNegative: Bool { self == .notContains || self == .notEquals || self == .isNotEmpty }
+
+        /// Asks whether the field has a value at all, such as invoices where no company was found; takes no value.
+        public var checksEmpty: Bool { self == .isEmpty || self == .isNotEmpty }
 
         /// The opposite condition, for "Ausschließen" / "Einschließen".
         public var negated: Op? {
@@ -257,6 +260,8 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
             case .notContains: return .contains
             case .equals: return .notEquals
             case .notEquals: return .equals
+            case .isEmpty: return .isNotEmpty
+            case .isNotEmpty: return .isEmpty
             default: return nil
             }
         }
@@ -275,6 +280,8 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
             case (_, .less): return "kleiner als"
             case (_, .before): return "vor"
             case (_, .after): return "nach"
+            case (_, .isEmpty): return "ist leer"
+            case (_, .isNotEmpty): return "ist nicht leer"
             }
         }
     }
@@ -301,6 +308,7 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
 
     /// Has a value to filter by. Rules still being typed are ignored, so they never hide or add rows.
     public var isComplete: Bool {
+        if op.checksEmpty { return true }
         switch field.kind {
         case .status, .source, .flag: return true
         case .number: return Self.number(trimmed) != nil
@@ -312,6 +320,7 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
     public var summary: String {
         let opText = op.label(for: field)
         guard isComplete else { return opText + " …" }
+        if op.checksEmpty { return opText }
         switch field.kind {
         case .flag: return opText
         case .status: return opText + " " + (Stage(rawValue: value)?.label ?? value)
@@ -326,6 +335,7 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
     /// Whether an invoice passes this rule. `folder` is the invoice's folder relative to the main folder.
     public func matches(_ r: InvoiceRecord, folder: String) -> Bool {
         let v = trimmed
+        if op.checksEmpty, let empty = isEmpty(in: r, folder: folder) { return empty != op.isNegative }
         switch field.kind {
         case .flag:
             let flagged = r.needsReview || r.fileMissing
@@ -356,6 +366,17 @@ public struct FilterRule: Codable, Identifiable, Equatable, Sendable {
             case .after: return day > v
             default: return day.hasPrefix(v) != op.isNegative
             }
+        }
+    }
+
+    /// Whether the invoice lacks this field's value; nil for fields that always have one.
+    private func isEmpty(in r: InvoiceRecord, folder: String) -> Bool? {
+        switch field.kind {
+        case .number: return r.fields.total == nil
+        case .date: return (field == .invoiceDate ? r.fields.invoiceDate : r.paidDate) == nil
+        case .text where field == .currency: return r.fields.currency.trimmingCharacters(in: .whitespaces).isEmpty
+        case .text: return text(of: r, folder: folder).trimmingCharacters(in: .whitespaces).isEmpty
+        case .status, .source, .flag: return nil
         }
     }
 

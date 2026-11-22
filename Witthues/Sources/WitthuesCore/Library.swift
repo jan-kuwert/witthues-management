@@ -16,7 +16,7 @@ public final class Library {
     private var cursors: [String: MailboxCursor] = [:]
     /// Files in the folders that were read and are not invoices (or copies of known ones), so they don't
     /// show up as unread again.
-    private var ignoredFiles: Set<String> = []
+    public private(set) var ignoredFiles: Set<String> = []
 
     public let directory: URL
 

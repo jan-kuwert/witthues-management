@@ -181,25 +181,40 @@ struct ArchiveView: View {
     /// Shown until the user changes the columns.
     static let defaultHidden: Set<String> = ["currency", "source", "check", "subject", "imported"]
 
+    /// A detail or check session covers the table; the table stays alive underneath so its scroll position,
+    /// selection and loaded rows are still there when the user comes back.
+    private var activeReview: ReviewSession? {
+        review.flatMap { $0.ids.indices.contains($0.index) ? $0 : nil }
+    }
+    private var openedRecord: InvoiceRecord.ID? {
+        opened.flatMap { id in model.library.records.contains(where: { $0.id == id }) ? id : nil }
+    }
+    private var covered: Bool { activeReview != nil || openedRecord != nil }
+
     var body: some View {
-        if let review, review.ids.indices.contains(review.index) {
-            reviewView(review)
-        } else if let opened, model.library.records.contains(where: { $0.id == opened }) {
-            // Same view as in the invoice lists, locked until the user unlocks it.
-            InvoiceDetail(id: opened, startLocked: true)
-                .id(opened)
-                .navigationTitle(title)
-                .toolbar {
-                    ToolbarItem(placement: .navigation) {
-                        Button { self.opened = nil } label: { Label("Zurück", systemImage: "chevron.left") }
-                            .help("Zurück zur Tabelle")
-                            .keyboardShortcut("[", modifiers: .command)
-                    }
-                    ToolbarItem(placement: .navigation) { stepper(opened) }
-                }
-        } else {
+        ZStack {
             table
+                .opacity(covered ? 0 : 1)
+                .allowsHitTesting(!covered)
+                .accessibilityHidden(covered)
+            if let review = activeReview {
+                reviewView(review)
+            } else if let opened = openedRecord {
+                // Same view as in the invoice lists, locked until the user unlocks it.
+                InvoiceDetail(id: opened, startLocked: true)
+                    .id(opened)
+                    .background(.background)
+                    .toolbar {
+                        ToolbarItem(placement: .navigation) {
+                            Button { self.opened = nil } label: { Label("Zurück", systemImage: "chevron.left") }
+                                .help("Zurück zur Tabelle")
+                                .keyboardShortcut("[", modifiers: .command)
+                        }
+                        ToolbarItem(placement: .navigation) { stepper(opened) }
+                    }
+            }
         }
+        .navigationTitle(activeReview != nil ? "Rechnungen prüfen" : title)
     }
 
     /// Opens an invoice; the rows shown now are what the arrows step through.
@@ -272,7 +287,7 @@ struct ArchiveView: View {
             Divider()
             InvoiceDetail(id: id, onReviewed: { nextToCheck() }).id(id)
         }
-        .navigationTitle("Rechnungen prüfen")
+        .background(.background)
     }
 
     /// After „Geprüft, weiter“: the next invoice still to check, after this one first, then from the start.
@@ -288,6 +303,15 @@ struct ArchiveView: View {
         var root: String
         var filter: SavedView
         var sortOrder: [KeyPathComparator<ArchiveRow>]
+    }
+
+    /// When the folder scan must run again. Comparing the records is cheap while they are unchanged (same storage),
+    /// unlike building the known paths on every render.
+    private struct ScanKey: Equatable {
+        var folder: String?
+        var records: [InvoiceRecord]
+        var ignored: Set<String>
+        var root: String
     }
 
     private var table: some View {
@@ -339,16 +363,15 @@ struct ArchiveView: View {
             rows = built
             rowsReady = true
         }
-        .task(id: filter.folder.map { ArchiveFolders.ScanInput(folder: $0, model.library) }) {
+        .task(id: ScanKey(folder: filter.folder, records: model.library.records, ignored: model.library.ignoredFiles, root: model.library.settings.rootFolder)) {
             guard let folder = filter.folder else { disk = nil; return }
             let input = ArchiveFolders.ScanInput(folder: folder, model.library)
             let scanned = await Task.detached(priority: .utility) { ArchiveFolders.scan(input) }.value
             guard !Task.isCancelled else { return }
             disk = scanned
         }
-        .navigationTitle(title)
         .toolbar {
-            let check = toCheck(rows)
+            let check = covered ? [] : toCheck(rows)
             if !check.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
                     Button { review = ReviewSession(ids: check) } label: {
@@ -359,7 +382,7 @@ struct ArchiveView: View {
                     .help("Alle Rechnungen mit „Prüfen“ nacheinander ansehen und bestätigen")
                 }
             }
-            ToolbarItemGroup(placement: .primaryAction) {
+            if !covered { ToolbarItemGroup(placement: .primaryAction) {
                 if let folder = filter.folder, !folder.isEmpty, viewID == nil || savedView?.isFolder == true {
                     let starred = folderView(folder) != nil
                     Button { toggleFolderStar(folder) } label: {
@@ -369,7 +392,7 @@ struct ArchiveView: View {
                 }
                 viewsMenu
                 columnsMenu
-            }
+            } }
         }
         .sheet(isPresented: $naming) {
             ViewEditor(title: "Ansicht speichern",
@@ -969,6 +992,45 @@ struct RuleEditor: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var valueFocused: Bool
 
+    /// The value to compare with; „ist leer“ / „ist nicht leer“ need none.
+    @ViewBuilder private var valueInput: some View {
+        switch rule.field.kind {
+        case .text:
+            TextField("Text", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
+        case .number:
+            TextField("Betrag, z. B. 100 oder 49,90", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
+        case .date:
+            if usesDay {
+                DatePicker("Datum", selection: Binding(get: { FilterRule.date(from: rule.value) ?? Date() },
+                                                       set: { rule.value = FilterRule.dayString($0) }),
+                           displayedComponents: .date)
+                    .labelsHidden()
+            } else {
+                TextField("Jahr oder Monat, z. B. 2026 oder 2026-03", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
+                if !years.isEmpty {
+                    HStack {
+                        ForEach(Array(years.prefix(4)), id: \.self) { y in
+                            Button(String(y)) { rule.value = String(y) }.controlSize(.small)
+                        }
+                    }
+                }
+            }
+        case .status:
+            Picker("Status", selection: $rule.value) {
+                Text("Offen").tag(InvoiceStatus.unpaid.rawValue)
+                Text("Bezahlt").tag(InvoiceStatus.paid.rawValue)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+        case .source:
+            Picker("Gelesen aus", selection: $rule.value) {
+                ForEach(ExtractionSource.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+            }
+            .labelsHidden()
+        case .flag:
+            EmptyView()
+        }
+    }
+
     private var usesDay: Bool { rule.op == .before || rule.op == .after }
 
     var body: some View {
@@ -978,41 +1040,7 @@ struct RuleEditor: View {
                 ForEach(rule.field.ops, id: \.self) { Text($0.label(for: rule.field)).tag($0) }
             }
             .labelsHidden()
-            switch rule.field.kind {
-            case .text:
-                TextField("Text", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
-            case .number:
-                TextField("Betrag, z. B. 100 oder 49,90", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
-            case .date:
-                if usesDay {
-                    DatePicker("Datum", selection: Binding(get: { FilterRule.date(from: rule.value) ?? Date() },
-                                                           set: { rule.value = FilterRule.dayString($0) }),
-                               displayedComponents: .date)
-                        .labelsHidden()
-                } else {
-                    TextField("Jahr oder Monat, z. B. 2026 oder 2026-03", text: $rule.value).textFieldStyle(.roundedBorder).focused($valueFocused).onSubmit { dismiss() }
-                    if !years.isEmpty {
-                        HStack {
-                            ForEach(Array(years.prefix(4)), id: \.self) { y in
-                                Button(String(y)) { rule.value = String(y) }.controlSize(.small)
-                            }
-                        }
-                    }
-                }
-            case .status:
-                Picker("Status", selection: $rule.value) {
-                    Text("Offen").tag(InvoiceStatus.unpaid.rawValue)
-                    Text("Bezahlt").tag(InvoiceStatus.paid.rawValue)
-                }
-                .pickerStyle(.segmented).labelsHidden()
-            case .source:
-                Picker("Gelesen aus", selection: $rule.value) {
-                    ForEach(ExtractionSource.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
-                }
-                .labelsHidden()
-            case .flag:
-                EmptyView()
-            }
+            if !rule.op.checksEmpty { valueInput }
             if let n = rule.op.negated, rule.field.kind != .flag {
                 Toggle("Ausschließen", isOn: Binding(get: { rule.op.isNegative }, set: { if $0 != rule.op.isNegative { rule.op = n } }))
                     .help("Rechnungen, auf die das zutrifft, ausblenden")

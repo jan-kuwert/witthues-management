@@ -305,6 +305,11 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(names(SavedView(rules: [FilterRule(.amount, .less, "100")])) == ["Telekom Deutschland"])
         #expect(names(SavedView(rules: [FilterRule(.invoiceDate, .before, "2026-01-13")])) == ["Herder"])
         #expect(names(SavedView(rules: [FilterRule(.invoiceDate, .equals, "2026-03")])) == ["Hassler"])
+        // „ist leer“ finds what extraction missed (whitespace counts as empty); the value is ignored.
+        let unknown = record("  ", total: "10", status: .unpaid, date: day(2026, 2, 1))
+        #expect([telekom, unknown].filter { SavedView(rules: [FilterRule(.company, .isEmpty, "Telekom")]).matches($0, folder: "") }.map(\.sha256) == ["  "])
+        #expect(names(SavedView(rules: [FilterRule(.amount, .isEmpty)])) == ["Hassler"])
+        #expect(names(SavedView(rules: [FilterRule(.amount, .isNotEmpty)])) == ["Telekom Deutschland", "Herder"])
     }
 
     @Test func viewsFromBeforeRulesStillLoad() throws {
