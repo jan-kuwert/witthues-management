@@ -1,7 +1,9 @@
 import Foundation
 
 public struct IMAPError: LocalizedError {
+    public enum Kind: Sendable { case login, connection, other }
     public var message: String
+    public var kind: Kind = .other
     public var errorDescription: String? { message }
 }
 
@@ -28,12 +30,12 @@ public actor IMAPClient {
     public func connect(username: String, password: String) async throws {
         let greeting = try await readLogicalLine()
         guard greeting.text.hasPrefix("* OK") || greeting.text.hasPrefix("* PREAUTH") else {
-            throw IMAPError(message: "Antwort des Mailservers: \(greeting.text)")
+            throw IMAPError(message: "Antwort des Mailservers: \(greeting.text)", kind: .connection)
         }
         do {
             _ = try await command("LOGIN \(quote(username)) \(quote(password))")
         } catch let e as IMAPError {
-            throw IMAPError(message: "Anmeldung fehlgeschlagen. Bitte E-Mail-Adresse und Postfach-Passwort prüfen. (\(e.message))")
+            throw IMAPError(message: "Anmeldung fehlgeschlagen. Bitte E-Mail-Adresse und Postfach-Passwort prüfen. (\(e.message))", kind: .login)
         }
     }
 
@@ -182,7 +184,7 @@ public actor IMAPClient {
     private func fill() async throws {
         let (data, eof) = try await task.readData(ofMinLength: 1, maxLength: 1 << 20, timeout: timeout)
         if let data, !data.isEmpty { buffer.append(data); return }
-        if eof { throw IMAPError(message: "Der Mailserver hat die Verbindung getrennt") }
+        if eof { throw IMAPError(message: "Der Mailserver hat die Verbindung getrennt", kind: .connection) }
     }
 
     private func quote(_ s: String) -> String {

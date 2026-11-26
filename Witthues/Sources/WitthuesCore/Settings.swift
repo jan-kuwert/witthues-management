@@ -85,21 +85,49 @@ public struct AppSettings: Codable, Equatable, Sendable {
 public enum Keychain {
     static let service = "Witthues IMAP"
 
-    public static func password(for account: String) -> String? {
+    /// What reading the password found. `denied` means it is stored but macOS did not hand it out, for example
+    /// because the access prompt was declined after an update; asking again shows the prompt again.
+    public enum Lookup: Equatable, Sendable {
+        case found(String)
+        case missing
+        case denied
+    }
+
+    /// Reads the password; macOS may ask the user to allow access first.
+    public static func lookup(for account: String) -> Lookup {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                     kSecAttrAccount as String: account, kSecReturnData as String: true]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data, let p = String(data: data, encoding: .utf8), !p.isEmpty else { return .missing }
+            return .found(p)
+        case errSecItemNotFound: return .missing
+        default: return .denied
+        }
     }
 
-    public static func setPassword(_ password: String, for account: String) {
+    public static func password(for account: String) -> String? {
+        if case .found(let p) = lookup(for: account) { return p }
+        return nil
+    }
+
+    /// Stores the password (an empty one removes it). Returns false when macOS refused.
+    @discardableResult
+    public static func setPassword(_ password: String, for account: String) -> Bool {
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                    kSecAttrAccount as String: account]
-        SecItemDelete(base as CFDictionary)
-        guard !password.isEmpty else { return }
+        guard !password.isEmpty else {
+            let s = SecItemDelete(base as CFDictionary)
+            return s == errSecSuccess || s == errSecItemNotFound
+        }
+        let data = Data(password.utf8)
+        let updated = SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if updated == errSecSuccess { return true }
+        // Not stored yet, or stored by an older build this one may not change: replace it.
+        if updated != errSecItemNotFound { SecItemDelete(base as CFDictionary) }
         var add = base
-        add[kSecValueData as String] = Data(password.utf8)
-        SecItemAdd(add as CFDictionary, nil)
+        add[kSecValueData as String] = data
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 }

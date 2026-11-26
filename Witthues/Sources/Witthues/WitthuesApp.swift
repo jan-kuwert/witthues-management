@@ -110,6 +110,7 @@ struct MenuBarView: View {
 /// "Checking…", the last result or the last error.
 struct StatusLine: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         if let p = model.progress {
@@ -157,9 +158,20 @@ struct StatusLine: View {
                     ProgressView().controlSize(.small)
                 }
                 Text(model.progress.map(\.text).flatMap { $0.isEmpty ? nil : $0 } ?? "Mails werden abgerufen …")
+            } else if let issue = model.mailIssue {
+                // Short and on one line; the tooltip explains, a click fixes it or leads to the setting.
+                Button { resolve(issue) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: issue.symbol).foregroundStyle(.orange)
+                        Text(issue.title).lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help(issue.detail)
             } else if let error = model.lastError {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(error).lineLimit(3).help(error)
+                Text(error).lineLimit(1).truncationMode(.tail).help(error)
             } else if let last = model.lastCheck {
                 Image(systemName: "checkmark.circle").foregroundStyle(.green)
                 Text("\(model.lastResult) · \(last.formatted(date: .omitted, time: .shortened))")
@@ -170,5 +182,19 @@ struct StatusLine: View {
         }
         .font(.callout)
         .foregroundStyle(.secondary)
+    }
+
+    private func resolve(_ issue: AppModel.MailIssue) {
+        switch issue {
+        case .keychainDenied:
+            // Asks macOS again; the prompt appears while the check reads the password.
+            model.checkNow()
+        case .setup:
+            model.settingsTab = model.library.settings.isFolderConfigured ? .mail : .folders
+            openSettings()
+        case .noPassword, .login, .offline:
+            model.settingsTab = .mail
+            openSettings()
+        }
     }
 }

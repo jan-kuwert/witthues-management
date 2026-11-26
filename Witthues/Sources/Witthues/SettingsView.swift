@@ -3,16 +3,20 @@ import WitthuesCore
 import SwiftUI
 
 struct SettingsView: View {
+    @Environment(AppModel.self) private var model
+
     var body: some View {
-        TabView {
-            FolderSettings().tabItem { Label("Ordner", systemImage: "folder") }
-            MailSettings().tabItem { Label("Mail", systemImage: "envelope") }
+        @Bindable var m = model
+        TabView(selection: $m.settingsTab) {
+            FolderSettings().tabItem { Label("Ordner", systemImage: "folder") }.tag(AppModel.SettingsTab.folders)
+            MailSettings().tabItem { Label("Mail", systemImage: "envelope") }.tag(AppModel.SettingsTab.mail)
             PastMailForm(folderListHeight: 200)
                 .padding(20)
                 .frame(height: 520, alignment: .top)
                 .tabItem { Label("Einlesen", systemImage: "clock.arrow.circlepath") }
-            CheckSettings().tabItem { Label("Abruf", systemImage: "clock.arrow.circlepath") }
-            UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
+                .tag(AppModel.SettingsTab.past)
+            CheckSettings().tabItem { Label("Abruf", systemImage: "clock.arrow.circlepath") }.tag(AppModel.SettingsTab.check)
+            UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }.tag(AppModel.SettingsTab.updates)
         }
         .frame(width: 620)
         .padding(.vertical, 8)
@@ -139,6 +143,10 @@ struct FolderSettings: View {
 struct MailSettings: View {
     @Environment(AppModel.self) private var model
     @State private var password = ""
+    /// The password as read from the keychain, so closing settings only writes a changed one. Without this, a
+    /// declined keychain prompt left the field empty and closing settings deleted the stored password.
+    @State private var stored = ""
+    @State private var access: Keychain.Lookup?
     @State private var testResult = ""
     @State private var testing = false
     @State private var folders: [String] = []
@@ -150,6 +158,7 @@ struct MailSettings: View {
                 TextField("E-Mail-Adresse", text: $library.settings.username, prompt: Text("name@ihre-domain.de"))
                 SecureField("Postfach-Passwort", text: $password, prompt: Text("Passwort aus dem Telekom Homepage Center"))
                     .onSubmit { savePassword() }
+                keychainRow
                 TextField("Server", text: $library.settings.imapHost)
                 HStack {
                     TextField("Port", value: $library.settings.imapPort, format: .number.grouping(.never)).frame(width: 140)
@@ -180,12 +189,51 @@ struct MailSettings: View {
         }
         .formStyle(.grouped)
         .frame(height: 520)
-        .onAppear { password = Keychain.password(for: model.library.settings.username) ?? "" }
-        .onDisappear { savePassword() }
+        .onAppear { readPassword() }
+        .onDisappear { if password != stored { savePassword() } }
+    }
+
+    /// Whether the app can use the stored password, with a button that asks macOS again.
+    private var keychainRow: some View {
+        HStack(spacing: 8) {
+            switch access {
+            case .found:
+                Label("Passwort im Schlüsselbund – verbunden", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            case .denied:
+                Label("Kein Zugriff auf den Schlüsselbund", systemImage: "key.fill").foregroundStyle(.orange)
+            case .missing, nil:
+                Label("Kein Passwort gespeichert", systemImage: "key").foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !hasAccess {
+                Button("Zugriff erneut anfragen") { readPassword(); if hasAccess { model.checkNow() } }
+                    .help("macOS fragt erneut nach dem Zugriff auf das Mail-Passwort – dann „Immer erlauben“ wählen. Kommt keine Abfrage, das Passwort oben neu eingeben und speichern.")
+            }
+        }
+        .font(.callout)
+    }
+
+    private var hasAccess: Bool {
+        if case .found? = access { return true }
+        return false
+    }
+
+    private func readPassword() {
+        let found = Keychain.lookup(for: model.library.settings.username)
+        access = found
+        if case .found(let p) = found { password = p; stored = p } else { stored = "" }
+        if found != .denied, model.mailIssue == .keychainDenied { model.mailIssue = nil }
     }
 
     private func savePassword() {
-        Keychain.setPassword(password, for: model.library.settings.username)
+        guard !password.isEmpty || access != .denied else { return }
+        if Keychain.setPassword(password, for: model.library.settings.username) {
+            stored = password
+            access = password.isEmpty ? .missing : .found(password)
+            if !password.isEmpty, model.mailIssue == .noPassword || model.mailIssue == .keychainDenied { model.mailIssue = nil }
+        } else {
+            access = .denied
+        }
     }
 
     private func test() {
@@ -197,6 +245,7 @@ struct MailSettings: View {
             do {
                 folders = try await MailChecker.testConnection(settings: s, password: password).sorted()
                 testResult = "Verbunden. \(folders.count) Ordner gefunden."
+                model.mailIssue = nil
             } catch {
                 testResult = error.localizedDescription
             }

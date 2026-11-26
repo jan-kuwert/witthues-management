@@ -20,6 +20,45 @@ final class AppModel {
     var lastCheck: Date?
     var lastResult = ""
     var lastError: String?
+    /// Why mail cannot be checked right now, shown short in the status line; clicking it fixes or explains it.
+    var mailIssue: MailIssue?
+    /// The settings tab to show when settings open, so a warning can lead straight to the right place.
+    var settingsTab = SettingsTab.folders
+
+    enum SettingsTab: Hashable { case folders, mail, past, check, updates }
+
+    enum MailIssue: Equatable {
+        case setup, noPassword, keychainDenied, login(String), offline(String)
+
+        /// Fits one line of the sidebar.
+        var title: String {
+            switch self {
+            case .setup: return "Einrichten"
+            case .noPassword: return "Passwort fehlt"
+            case .keychainDenied: return "Mail freigeben"
+            case .login: return "Login prüfen"
+            case .offline: return "Offline"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .keychainDenied: return "key.fill"
+            case .offline: return "wifi.exclamationmark"
+            default: return "exclamationmark.triangle.fill"
+            }
+        }
+
+        /// The full explanation, as tooltip.
+        var detail: String {
+            switch self {
+            case .setup: return "Hauptordner und Mailkonto in den Einstellungen eintragen. Klicken öffnet sie."
+            case .noPassword: return "Im Schlüsselbund ist kein Postfach-Passwort gespeichert. Klicken öffnet die Mail-Einstellungen."
+            case .keychainDenied: return "macOS hat den Zugriff auf das gespeicherte Mail-Passwort nicht erlaubt. Klicken fragt erneut – dann „Immer erlauben“ wählen."
+            case .login(let m), .offline(let m): return m + "\nKlicken öffnet die Mail-Einstellungen."
+            }
+        }
+    }
     /// Shows the sheet for reading older mail; set from the menu and the sidebar.
     var showingPastMail = false
     private var timer: Task<Void, Never>?
@@ -57,22 +96,33 @@ final class AppModel {
 
     func check() async {
         library.refreshFiles()
-        guard !isChecking, library.settings.isMailConfigured, library.settings.isFolderConfigured else {
-            if !library.settings.isMailConfigured || !library.settings.isFolderConfigured {
-                lastError = "Bitte in den Einstellungen den Hauptordner wählen und das Mailkonto eintragen."
-            }
+        guard !isChecking else { return }
+        guard library.settings.isMailConfigured, library.settings.isFolderConfigured else {
+            mailIssue = .setup
             return
+        }
+        // Reading the password shows macOS's access prompt again when it was declined before.
+        let password: String
+        switch Keychain.lookup(for: library.settings.username) {
+        case .found(let p): password = p
+        case .missing: mailIssue = .noPassword; return
+        case .denied: mailIssue = .keychainDenied; return
         }
         isChecking = true
         defer { isChecking = false; progress = nil; lastCheck = Date() }
         do {
-            let password = Keychain.password(for: library.settings.username) ?? ""
             let summary = try await MailChecker.check(library: library, password: password) { [weak self] in self?.progress = $0 }
             lastResult = summary.text
             lastError = nil
+            mailIssue = nil
             if summary.filed > 0 { notify(summary.filed == 1 ? "1 neue Rechnung abgelegt" : "\(summary.filed) neue Rechnungen abgelegt") }
+        } catch let e as IMAPError where e.kind != .other {
+            mailIssue = e.kind == .login ? .login(e.message) : .offline(e.message)
+        } catch let e as IMAPError {
+            lastError = e.message
         } catch {
-            lastError = error.localizedDescription
+            // Everything else comes from the network (no connection, server not found, TLS).
+            mailIssue = .offline(error.localizedDescription)
         }
     }
 
