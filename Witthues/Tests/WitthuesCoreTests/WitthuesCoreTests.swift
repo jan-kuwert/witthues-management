@@ -210,6 +210,28 @@ private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         #expect(lib.suppliers.filter { $0.name == "Gemeinsam GmbH" }.count == 1)
     }
 
+    @Test func misfiledInvoiceGoesToSkippedAndCanComeBack() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lib = Library(directory: tmp.appendingPathComponent("data"))
+        lib.settings.rootFolder = tmp.appendingPathComponent("Rechnungen").path
+        let ex = Extractor(useAppleIntelligence: false)
+        let pdf = try fixture("german.pdf")
+        guard case .filed(let r) = try await lib.ingest(data: pdf, fileName: "a.pdf", origin: MailOrigin(subject: "AGB"), extractor: ex)
+        else { Issue.record("not filed"); return }
+        try lib.declareNotInvoice([r.id])
+        // Gone from the app and from the unpaid folder; listed under „Keine Rechnungen“.
+        #expect(lib.records.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: r.filePath))
+        let s = try #require(lib.skipped.first)
+        #expect(!s.origin.attachmentName.isEmpty && FileManager.default.fileExists(atPath: s.storedPath))
+        // The next mail check does not file it again.
+        #expect(try await lib.ingest(data: pdf, fileName: "a.pdf", origin: MailOrigin(), extractor: ex) == .duplicate)
+        // „Als Rechnung ablegen“ brings it back into the unpaid folder.
+        try await lib.importSkipped(s.id, extractor: ex)
+        #expect(lib.skipped.isEmpty && lib.records.count == 1)
+        #expect(lib.records.first.map { FileManager.default.fileExists(atPath: $0.filePath) && $0.stage == .open } == true)
+    }
+
     @Test func folderFileThatIsNoInvoiceCanBeDeclaredOne() async throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let lib = Library(directory: tmp.appendingPathComponent("data"))

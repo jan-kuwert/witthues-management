@@ -948,6 +948,7 @@ struct ArchiveView: View {
                 else { model.library.setPrinted(picked.map(\.id), true) }
             }
             Divider()
+            Button(picked.count == 1 ? "Keine Rechnung …" : "\(picked.count) sind keine Rechnungen …") { model.notInvoice = picked.map(\.id) }
             Button("In den Papierkorb", role: .destructive) {
                 do { try model.library.trash(picked.map(\.id)) } catch { model.lastError = error.localizedDescription }
             }

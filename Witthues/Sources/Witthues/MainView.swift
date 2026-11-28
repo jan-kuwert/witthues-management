@@ -416,6 +416,7 @@ struct InvoiceList: View {
                     }
                     Button("Im Finder zeigen") { NSWorkspace.shared.activateFileViewerSelecting([r.fileURL]) }
                     Divider()
+                    Button("Keine Rechnung …") { model.notInvoice = [r.id] }
                     Button("In den Papierkorb", role: .destructive) {
                         do { try model.library.trash([r.id]) } catch { model.lastError = error.localizedDescription }
                     }
@@ -830,13 +831,19 @@ struct InvoiceDetail: View {
                 Text("Gedruckt am \(p.formatted(date: .numeric, time: .omitted))").font(.caption).foregroundStyle(.secondary)
             }
             if !r.fileMissing {
-                Button(role: .destructive) {
-                    do { try model.library.trash([r.id]) } catch { model.lastError = error.localizedDescription }
-                } label: {
-                    Label("In den Papierkorb", systemImage: "trash")
+                HStack(spacing: 16) {
+                    Button(role: .destructive) {
+                        do { try model.library.trash([r.id]) } catch { model.lastError = error.localizedDescription }
+                    } label: {
+                        Label("In den Papierkorb", systemImage: "trash")
+                    }
+                    .foregroundStyle(.red)
+                    Button { model.notInvoice = [r.id] } label: {
+                        Label("Keine Rechnung", systemImage: "doc.badge.ellipsis")
+                    }
+                    .help("Falsch erkannt: kommt unter „Keine Rechnungen“, die Datei verlässt den Ordner")
                 }
                 .buttonStyle(.borderless)
-                .foregroundStyle(.red)
                 .font(.callout)
                 .disabled(locked)
             }

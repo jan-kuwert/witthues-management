@@ -663,6 +663,29 @@ public final class Library {
         save()
     }
 
+    /// Takes back invoices that were filed by mistake: each goes to „Keine Rechnungen“ (with a copy kept by the app,
+    /// so „Als Rechnung ablegen“ can file it again), its file leaves the folders for the macOS Trash, and the same
+    /// file is not filed again by the next mail check.
+    public func declareNotInvoice(_ ids: [InvoiceRecord.ID]) throws {
+        for id in ids {
+            guard let r = records.first(where: { $0.id == id }) else { continue }
+            var origin = r.origin
+            if origin.attachmentName.isEmpty { origin.attachmentName = r.fileURL.lastPathComponent }
+            if let data = try? Data(contentsOf: r.fileURL) {
+                let stored = directory.appendingPathComponent("Skipped")
+                    .appendingPathComponent(r.sha256 + "." + Self.ext(origin.attachmentName))
+                try data.write(to: stored, options: .atomic)
+                skipped.insert(SkippedAttachment(origin: origin, reason: "Von Hand als keine Rechnung markiert",
+                                                 storedPath: stored.path), at: 0)
+                if FileManager.default.fileExists(atPath: r.filePath) {
+                    try FileManager.default.trashItem(at: r.fileURL, resultingItemURL: nil)
+                }
+            }
+            records.removeAll { $0.id == id }
+        }
+        save()
+    }
+
     /// Forgets every deleted invoice.
     public func clearDeleted() {
         records.removeAll(where: \.fileMissing)

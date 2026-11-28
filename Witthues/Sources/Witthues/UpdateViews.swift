@@ -28,6 +28,16 @@ private struct RevertConfirmation: ViewModifier {
             Text(r.printed ? "Das Druckdatum wird gelöscht."
                            : "Das Zahlungsdatum wird gelöscht und die Datei wandert zurück in den Ordner für offene Rechnungen.")
         }
+        .confirmationDialog(
+            (model.notInvoice?.count ?? 0) > 1 ? "\(model.notInvoice!.count) Dateien sind keine Rechnungen?" : "Keine Rechnung?",
+            isPresented: Binding(get: { model.notInvoice != nil }, set: { if !$0 { model.notInvoice = nil } }),
+            presenting: model.notInvoice
+        ) { ids in
+            Button("Keine Rechnung", role: .destructive) { model.confirmNotInvoice(ids) }
+            Button("Abbrechen", role: .cancel) {}
+        } message: { _ in
+            Text("Kommt unter „Keine Rechnungen“ und zählt nicht mehr mit. Die Datei verlässt den Ordner und landet im Papierkorb; mit „Als Rechnung ablegen“ lässt sie sich zurückholen.")
+        }
     }
 }
 

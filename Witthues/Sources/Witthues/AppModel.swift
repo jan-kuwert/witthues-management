@@ -251,6 +251,13 @@ final class AppModel {
     func askRevertPaid(_ ids: [InvoiceRecord.ID]) { revert = Revert(ids: ids, printed: false) }
     func askRevertPrinted(_ ids: [InvoiceRecord.ID]) { revert = Revert(ids: ids, printed: true) }
 
+    /// Invoices the user marked as „Keine Rechnung“, waiting for the confirmation.
+    var notInvoice: [InvoiceRecord.ID]?
+
+    func confirmNotInvoice(_ ids: [InvoiceRecord.ID]) {
+        do { try library.declareNotInvoice(ids) } catch { lastError = error.localizedDescription }
+    }
+
     func confirm(_ r: Revert) {
         if r.printed {
             library.setPrinted(r.ids, false)
